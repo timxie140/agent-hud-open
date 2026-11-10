@@ -48,6 +48,11 @@ jobs:
         run: cargo test --workspace --locked --no-fail-fast
       - name: Build macOS application and disk image
         run: pnpm run build:macos -- --bundle
+      - name: Smoke check runtime inside the complete macOS app
+        run: |
+          smoke_data="$(mktemp -d)"
+          printf '%s' '{"action":"status","arguments":{}}' | AGENTHUD_DOT_DATA="$smoke_data" "target/release/bundle/macos/Agent HUD.app/Contents/Resources/dot/agent-hud-dot" --control-stdin > "$smoke_data/status.json"
+          python3 -c 'import json,sys; value=json.load(open(sys.argv[1]))["result"]; assert value["enabled"] is False and value["running"] is False' "$smoke_data/status.json"
       - name: Record provenance and archive complete app
         run: |
           mkdir -p dot-release

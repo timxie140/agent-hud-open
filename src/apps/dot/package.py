@@ -75,7 +75,7 @@ def main():
         subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir',
             '--name', 'agent-hud-dot', '--distpath', str(temporary / 'dist'), '--workpath', str(temporary / 'work'),
             '--specpath', str(temporary), str(source / 'dot_runtime.py')], check=True, cwd=source)
-        shutil.copytree(temporary / 'dist/agent-hud-dot', output, dirs_exist_ok=True)
+        shutil.copytree(temporary / 'dist/agent-hud-dot', output, dirs_exist_ok=True, symlinks=True)
         copy_runtime_licenses(output)
         # Exercise the frozen executable with empty, isolated data. Never start listeners.
         helper = output / ('agent-hud-dot.exe' if sys.platform == 'win32' else 'agent-hud-dot')
