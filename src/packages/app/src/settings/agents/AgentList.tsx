@@ -1,6 +1,7 @@
 import type { Provider } from "@agent-hud/protocol";
 import { HUDArtwork as HUDLogo } from "@agent-hud/hud/HUDArtwork";
 import type { Text } from "../SettingsPrimitives";
+import { CircleDot } from "lucide-react";
 
 /** The agents, found ones first; the rest under a small label, still
  * selectable so they can be set up before they are installed. */
@@ -25,7 +26,11 @@ export function AgentList({
       aria-current={provider.id === selected ? "true" : undefined}
       onClick={() => select(provider.id)}
     >
-      <HUDLogo source={provider.id} size={18} />
+      {provider.id === "dot" ? (
+        <CircleDot aria-hidden="true" size={18} />
+      ) : (
+        <HUDLogo source={provider.id} size={18} />
+      )}
       <span className="agents-list-name">{provider.name}</span>
       {!provider.enabled && (
         <span className="agents-list-state">{t("Off", "已关闭")}</span>

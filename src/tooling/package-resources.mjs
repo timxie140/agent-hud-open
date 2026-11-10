@@ -63,3 +63,10 @@ if (platform !== "windows") {
   chmodSync(join(output, "agent-hud-engine"), 0o755);
   chmodSync(join(output, "agent-hud-mcp"), 0o755);
 }
+if (platform === "windows" || platform === "darwin") {
+  run(process.env.PYTHON ?? (platform === "windows" ? "python" : "python3"), [
+    "src/apps/dot/package.py",
+    "--out",
+    join(output, "dot"),
+  ]);
+}

@@ -19,6 +19,8 @@ impl Messaging {
         let replies = self.journal.replies();
         for message in self.journal.messages_mut() {
             if message.answered
+                || message.to.client == "dot"
+                || message.from.client == "dot"
                 || message.to.session_id.is_empty()
                 || matches!(message.state.as_str(), "refused" | "expired" | "uncertain")
             {

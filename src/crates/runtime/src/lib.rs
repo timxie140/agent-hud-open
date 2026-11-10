@@ -2,7 +2,7 @@
 use agent_hud_core::{AccountProjection, AgentHudCore, SourceRoot};
 pub use agent_hud_platform::WebSignInDesk;
 use agent_hud_platform::{AccountService, FileChanges, NativePlatform};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex, PoisonError},
@@ -19,17 +19,18 @@ pub use agent_hud_core::demo::DemoScript;
 pub use agent_hud_core::l10n;
 pub use agent_hud_core::projects;
 pub use agent_hud_core::replies;
+pub use agent_hud_platform::CollectionGate;
 pub use agent_hud_platform::claude_plugin;
 pub use agent_hud_platform::client_executable;
 pub use agent_hud_platform::deepseek_plugin;
 pub use agent_hud_platform::delivery;
+pub use agent_hud_platform::dot;
 pub use agent_hud_platform::hooks;
 pub use agent_hud_platform::hud_tools;
 pub use agent_hud_platform::instance;
 pub use agent_hud_platform::local_tools;
 #[cfg(target_os = "macos")]
 pub use agent_hud_platform::registered_applications;
-pub use agent_hud_platform::CollectionGate;
 pub use startup::{claim_collector, home_directory, legacy_preferences, local_tools_directory};
 
 pub struct Runtime {

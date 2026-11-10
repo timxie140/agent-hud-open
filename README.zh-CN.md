@@ -330,3 +330,15 @@ pnpm run build:macos -- --bundle
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jazzenchen/agent-hud-open&type=date&legend=top-left" />
  </picture>
 </a>
+# 本分支的 Dot / Luo 接入
+
+在 **设置 → 智能体** 列表新增 Dot。选中后可启用并填写 tunnel ID、runtime API key
+及可选的本机代理，查看连接、订阅和最终回执状态。macOS 和 Windows 启动 HUD 时
+自动启动已启用的连接，不依赖 Codex Bridge，不需在每个线程反复注册。
+
+Codex 用 HUD 原有消息工具向 `dot:luo` 发消息，真实收到回信后用
+`confirm_delivery` 向 Luo 报告送达，回执不再触发 ACK 循环。
+
+请阅读[完整教程：配置、Luo 订阅、送达确认、升级与故障排查](docs/dot-setup.md)。
+Luo 侧的一次插件连接和订阅是必需步骤，填写隧道配置本身不代表订阅成功。
+

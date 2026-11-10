@@ -14,6 +14,7 @@ mod client_cli;
 mod coordinator;
 mod deepseek_plugin;
 mod demo;
+mod dot;
 pub mod extension;
 mod hud;
 mod instance;
@@ -107,6 +108,7 @@ pub fn run_with_options(
                 mcp_clients::native_mcp_clients,
                 claude_plugin::native_claude_plugin,
                 deepseek_plugin::native_deepseek_plugin,
+                dot::native_dot,
                 picture::picture_payload,
                 picture::picture_complete,
                 picture::picture_resize,
@@ -153,6 +155,10 @@ pub fn run_with_options(
             claude_plugin::repair_on_launch(app.handle());
             deepseek_plugin::repair_on_launch(app.handle());
             mcp_clients::repair_on_launch(app.handle());
+            if !demo {
+                // Stored opt-in only: the sidecar remains idle while Dot is disabled.
+                let _ = agent_hud_runtime::dot::start_with_hud();
+            }
             app.manage(picture::Pictures::default());
             let directory = agent_hud_runtime::local_tools_directory()?;
             let demo_data = directory.join("demo-run");

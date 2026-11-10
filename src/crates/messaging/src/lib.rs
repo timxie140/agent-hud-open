@@ -10,6 +10,7 @@
 //! The words are kept only while they are delivered: the journal keeps who sent
 //! what to whom, a fingerprint of the words and where the answer will be, and
 //! an answer is read again from the other session's transcript each time.
+mod dot_routes;
 mod flights;
 mod get;
 mod journal;
@@ -25,19 +26,19 @@ mod tools;
 mod transcript;
 mod words;
 
-pub use preferences::{Preferences, DEFAULT_LIMIT};
+pub use preferences::{DEFAULT_LIMIT, Preferences};
 pub use transcript::{StoredTurn, Turns};
 
 use agent_hud_platform::delivery::{
-    self, DeliveryState, LocalClients, Operation, PromptForm, Provider, SendRequest, SessionStarts,
-    SessionTarget, StartReceipt, StartRequest, CLAUDE_MESSAGES_OFF, DEEPSEEK_MESSAGES_OFF,
+    self, CLAUDE_MESSAGES_OFF, DEEPSEEK_MESSAGES_OFF, DeliveryState, LocalClients, Operation,
+    PromptForm, Provider, SendRequest, SessionStarts, SessionTarget, StartReceipt, StartRequest,
 };
-use flights::flight;
 pub use flights::Flight;
+use flights::flight;
 use journal::{Journal, Kind, Message, Party};
 use outcome::*;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use snapshot::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -170,6 +171,11 @@ impl Messaging {
                 let id = arguments["id"].as_str().ok_or("id is required")?;
                 self.get(id, host, now)
             }
+            "confirm_delivery" => {
+                let caller = caller.ok_or("Actual receiving client identity is required")?;
+                let id = arguments["id"].as_str().ok_or("id is required")?;
+                self.confirm_dot(&caller, id)
+            }
             _ => Err("Unknown local application tool".into()),
         }
     }
@@ -180,10 +186,11 @@ impl Messaging {
     /// Whether any message still waits for something maintenance does: its
     /// delivery to be captured, or its answer to be thrown back.
     pub fn waiting(&self) -> bool {
-        self.journal.pending()
+        self.journal.pending() || (self.preferences.enabled && agent_hud_platform::dot::enabled())
     }
     pub fn maintain(&mut self, host: &Host<'_>, now: i64) {
         self.preferences = Preferences::read(&host.snapshot["settings"]);
+        self.maintain_dot(host, now);
         let clients = self.clients.clone();
         let mut changed = self.journal.prune(now);
         changed |= self.fly_answers(host, now);

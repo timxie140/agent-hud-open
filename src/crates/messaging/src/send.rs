@@ -43,6 +43,9 @@ impl Messaging {
         if same_session(to, &caller.session_id) {
             return Ok(refused(&words::to_self(zh)));
         }
+        if to == agent_hud_platform::dot::SESSION {
+            return self.send_dot(caller, text, reply_to, replied.as_ref(), host, now);
+        }
         let Some(target) = find(host.snapshot, to) else {
             return Ok(refused(&words::unknown(zh)));
         };

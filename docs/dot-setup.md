@@ -1,0 +1,127 @@
+# Dot / Luo 接入与实际送达回执
+
+Dot 是 HUD 中独立的通信客户端，不能当作 Codex 会话或用一个猜测的聊天 ID 代替。
+本版本支持 macOS、Windows；不需要 Codex Bridge，不启动另一个 Codex app-server。
+
+## 1. 在 HUD 配置一次
+
+1. 安装包含 Dot sidecar 和独立 tunnel-client 的完整构建。
+2. 打开 **设置 → 智能体 → Dot**，打开“启用”。
+3. 填写现有或新建的 **Tunnel ID** 和有对应隧道 Read + Use 权限的 **Runtime API key**。
+   隧道还须关联 Luo 所在的 ChatGPT workspace；仅关联 Platform organization 不够。
+4. 如本机通过代理联网，在“本机 HTTP 代理”填写现有的回环代理，例如
+   `http://127.0.0.1:7890`。Windows 会预填已配置且无凭据的回环代理；可清空直连。
+5. 点击“保存并连接”。密钥只在本机填写，不发到聊天、命令行或 GitHub。
+   Windows 用当前用户 DPAPI，macOS 用登录 Keychain；无法访问安全存储时失败关闭，
+   不回退成明文文件。留空密钥输入框会保留原密钥，不会清除或回显。
+
+状态依次为启动、连接隧道、等待 Luo 订阅、已连接 Luo。启用不等于订阅成功。
+全局“智能体消息”权限仍须由用户允许，Dot 不会自动打开或绕过该权限。
+
+以后启动 HUD 会自动启动启用的 Dot 连接，客户端注册及订阅数据持久保存，
+无需在每个 Codex 线程手动注册。正常关闭 HUD 时结束它自己启动的 sidecar 和
+tunnel；不会结束其他应用或修改系统代理、服务、计划任务。macOS 首次访问
+Keychain 可能要求用户授权；拒绝后须由用户处理，程序不会绕过。
+
+### 从此前临时脚本迁移
+
+先在原终端结束**旧 Dot MCP 和旧独立 tunnel 两个临时进程**，再启用新版本。
+程序发现 `8787` 已占用会拒绝接管，不自动杀进程。不要让两个客户端同时使用
+同一 tunnel 的 main 通道。删除旧 Bridge 程序不应删除 Dot 已沿用的平台隧道。
+不从旧进程提取密钥；在 HUD 中重新安全输入一次。新版本首次连接需重新订阅，
+之后自动恢复持久状态并接受平台刷新，不要求反复手工注册。
+
+## 2. 在现有 Luo 中连接插件
+
+1. 在 ChatGPT Plugins 添加自定义 MCP server，名称可为 **Dot-HUD**。
+2. Connection 选择 **Tunnel**，使用 HUD 中相同的 tunnel ID。
+   当前实现通过私有隧道注入上游认证，无需另填 sidecar 的局部访问密钥。
+3. 在**现有 Luo** 中启用该插件，核实有：
+   - 事件 `hud.message.created`
+   - 工具 `hud_ack_message`、`hud_reply`、`hud_get_delivery_status`
+4. 升级后在插件页重新扫描工具和事件，不要沿用只包含旧 payload schema 的缓存。
+
+不要猜 Dot ID，不新建替代聊天来冒充 Luo。`dot:luo` 是注册的逻辑邮箱 ID。
+
+## 3. 给 Luo 的订阅说明
+
+将以下说明发送到现有 Luo（只需要首次设置，或实际订阅失效需要恢复时）：
+
+> 请订阅 Dot-HUD 的 `hud.message.created`，arguments 为 `{"mailbox":"luo"}`。
+> data.kind 为 `message` 时，先调用 `hud_ack_message`，id 使用
+> data.message_id；需要回复时调用一次 `hud_reply`，id 仍用原消息 ID。
+> `hud_reply` 的 accepted/queued 仅表示投递受理，不代表 Codex 实际收到。
+> data.kind 为 `delivery_receipt` 时，仅记录送达通知；可以用
+> `hud_get_delivery_status` 查询该原消息 ID，确认 recipientConfirmed=true。
+> 不对 delivery_receipt 调用确认或回复，不形成 ACK 循环。
+> 不确定时保留原 ID 和状态，不自动重发。
+
+订阅由平台提供的签名 callback 绑定到真实接收聊天。HUD 验证 challenge、
+HTTPS、公网地址和签名；代理方式仍将 callback 固定到已验证公网 IP，TLS 校验
+原域名，不允许 Fake-IP/私有地址或重定向。回调 URL 和签名秘密不会出现在日志中。
+
+## 4. Codex 像给 DSH 一样发送
+
+使用 HUD 已有工具：
+
+```json
+list_sessions({})
+send_message({"to":"dot:luo","text":"一次性通信验证 YOUR-UNIQUE-MARKER"})
+get_message({"id":"发送返回的消息ID"})
+```
+
+必须从列表核对 `client=dot`、`id=dot:luo`、标题 Luo 和可达状态。
+消息源来自 Codex MCP 执行器的真实线程元数据，不接受模型任意指定另一线程。
+没有可识别发送身份、未启用、无有效订阅或权限关闭时拒绝，不能换身份绕过。
+
+### 收件 Codex 的最后一步
+
+Luo 回信作为真实输入到达原 Codex 线程后，消息 envelope 会给出 `reply_id`。
+此时调用：
+
+```json
+confirm_delivery({"id":"实际收到的回信reply_id"})
+```
+
+只能由该回信的真实目标 Codex 线程确认。**读取 get_message 的答案不算实际收到**，
+不能据查询文本调用 confirm_delivery。确认生成一条 `delivery_receipt` 事件通知 Luo；
+重复确认只读回原结果，不再发事件。平台 HTTP 2xx 仅为通知受理，Luo 仍可通过
+hud_get_delivery_status 读取持久的确认记录。丢失/不确定的通知不自动重发。
+
+| 状态 | 能证明什么 |
+| --- | --- |
+| webhook_accepted / queued | 事件被接收或消息在队列中 |
+| dotAcknowledged=true | Luo 调用了实际接收确认 |
+| replyId / replyText | Luo 调用了主动回复工具 |
+| nativeReceipt accepted | 原生 HUD 接受了回程投递 |
+| recipientConfirmed=true | 接收 Codex 在真实收到后提交了最终确认 |
+
+本服务不把原生 accepted、查询结果或模型自行复述当作最终送达确认。
+退出或崩溃后已经保留的投递 reservation 不会自动重新发送。
+
+## 5. 故障排查与运行数据
+
+- **等待订阅**：核插件启用、事件扫描及 workspace 的事件任务权限，保留平台原始错误。
+- **端口占用**：结束用户启动的旧 Dot 临时进程，勿结束不明进程或启动第二个相同隧道。
+- **隧道未就绪**：核 tunnel ID、Read + Use 权限、workspace 关联和现有代理。
+- **callback_* 错误**：查看有界 `diagnostics.jsonl` 的类别；不允许关闭 TLS、签名或公网校验。
+- **native refused/uncertain**：记录原生状态及原消息 ID，不自动换路重投。
+- **原生受理但没有最终确认**：收件线程尚未实际收到或未调用 confirm_delivery，不能声称成功。
+- **没有 confirm_delivery 工具**：刷新 HUD MCP 工具列表；不得用普通聊天 ACK 冒充该回执。
+- **macOS 安全提示或 Keychain 拒绝**：如实报告，使用系统支持的授权方式；不移除隔离属性或绕过安全限制。
+
+数据位于当前用户的 `AgentHUDPrivate/dot-client`（Windows 在 LocalAppData，macOS 在
+`~/Library/Application Support`）。保存加密配置、受保护订阅秘密、消息与回执状态，
+以及最多 1 MiB 的脱敏诊断。消息正文只留在本机数据库，不提交到源码仓库。
+诊断日志不含密钥、签名、回调路径或消息正文。卸载程序前先在 Dot 中停止订阅；
+不要把另一个产品的清理脚本用于这个目录或仍在使用的平台隧道。
+
+## 构建与验收范围
+
+Windows 和 macOS 必须各在本机系统的 runner 构建，不能将交叉生成文件当作通过。
+执行 `python -m pip install -r src/apps/dot/requirements-build.txt` 后按仓库平台构建命令
+生成完整安装包；构建会打包 sidecar、独立 tunnel-client、许可证和来源校验记录。
+隧道二进制固定为 upstream v0.0.19，下载档案 SHA256 必须匹配才可打包。
+
+CI 产物带源码 revision、runner 架构、校验文件。未配置开发者签名/公证时明确标记
+unsigned，CI 构建通过不等于该平台真实 GUI、Keychain 或完整聊天路径已人工验收。
