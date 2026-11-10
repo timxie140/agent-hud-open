@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: macos-dot-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   macos:
@@ -30,6 +30,8 @@ jobs:
           python-version: '3.12'
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - run: python3 -m pip install -r src/apps/dot/requirements-build.txt
       - name: Test Dot transport and delivery receipts
         working-directory: src/apps/dot

@@ -1,7 +1,8 @@
 # Dot / Luo 接入与实际送达回执
 
 Dot 是 HUD 中独立的通信客户端，不能当作 Codex 会话或用一个猜测的聊天 ID 代替。
-本版本支持 macOS、Windows；不需要 Codex Bridge，不启动另一个 Codex app-server。
+本版本支持 macOS、Windows；不需要 Codex Bridge。回程沿用 HUD 既有 Codex
+投递通道，不新建或接管替代聊天，也不自行恢复另一个会话。
 
 ## 1. 在 HUD 配置一次
 

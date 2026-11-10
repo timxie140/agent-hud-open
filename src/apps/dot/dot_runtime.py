@@ -1,5 +1,6 @@
 """Windows sidecar lifecycle and current-user encrypted configuration."""
 import argparse
+from contextlib import closing
 import ctypes
 import http.client
 import json
@@ -243,7 +244,7 @@ def supervise_macos(hud_pid):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
-        with select.kqueue() as watcher:
+        with closing(select.kqueue()) as watcher:
             try:
                 watcher.control([select.kevent(hud_pid, filter=select.KQ_FILTER_PROC,
                     flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
