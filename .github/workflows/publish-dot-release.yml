@@ -148,3 +148,10 @@ jobs:
             if (release.draft) release = (await github.rest.repos.updateRelease({owner, repo, release_id: release.id, body, draft: false, prerelease: true})).data;
             core.info('Published verified release: ' + release.html_url);
             await core.summary.addLink('Download complete Dot release', release.html_url).write();
+      - name: Retain a verified mirror for connector download
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-hud-dot-complete-release
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 14
