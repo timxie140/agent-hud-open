@@ -1,6 +1,7 @@
 """Freeze the native sidecar and bundle a pinned independent tunnel release."""
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,31 @@ RELEASES = {
 }
 
 
+def copy_runtime_licenses(output):
+    licenses = output / 'licenses'
+    licenses.mkdir(exist_ok=True)
+    python_license = next((path for path in (
+        Path(sys.base_prefix) / 'LICENSE.txt', Path(sys.base_prefix) / 'LICENSE',
+        Path(sys.base_prefix) / 'Resources/LICENSE.txt') if path.is_file()), None)
+    if python_license is None:
+        raise RuntimeError('Python runtime license missing')
+    shutil.copyfile(python_license, licenses / 'Python-LICENSE.txt')
+    # Include installed packager/dependency notices; no environment values or secrets.
+    distributions = []
+    for distribution in importlib.metadata.distributions():
+        name = distribution.metadata['Name']
+        destination = licenses / name
+        for entry in distribution.files or []:
+            if Path(entry).name.lower().startswith(('license', 'copying', 'notice')):
+                source = Path(distribution.locate_file(entry))
+                if source.is_file():
+                    destination.mkdir(exist_ok=True)
+                    shutil.copyfile(source, destination / Path(entry).name)
+        distributions.append({'name': name, 'version': distribution.version})
+    (licenses / 'build-distributions.json').write_text(
+        json.dumps(distributions, indent=2) + '\n', encoding='utf-8')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--out', required=True)
@@ -35,6 +61,16 @@ def main():
             '--name', 'agent-hud-dot', '--distpath', str(temporary / 'dist'), '--workpath', str(temporary / 'work'),
             '--specpath', str(temporary), str(source / 'dot_runtime.py')], check=True, cwd=source)
         shutil.copytree(temporary / 'dist/agent-hud-dot', output, dirs_exist_ok=True)
+        copy_runtime_licenses(output)
+        # Exercise the frozen executable with empty, isolated data. Never start listeners.
+        helper = output / ('agent-hud-dot.exe' if sys.platform == 'win32' else 'agent-hud-dot')
+        environment = dict(os.environ, AGENTHUD_DOT_DATA=str(temporary / 'smoke-data'))
+        smoke = subprocess.run([str(helper), '--control-stdin'],
+            input='{"action":"status","arguments":{}}', text=True, encoding='utf-8',
+            capture_output=True, timeout=25, env=environment, check=True)
+        result = json.loads(smoke.stdout).get('result', {})
+        if result.get('enabled') is not False or result.get('running') is not False:
+            raise RuntimeError('Frozen Dot runtime smoke check failed')
         url = 'https://github.com/openai/tunnel-client/releases/download/v0.0.19/tunnel-client-v0.0.19-' + target + '.zip'
         archive = temporary / 'tunnel.zip'
         urllib.request.urlretrieve(url, archive)

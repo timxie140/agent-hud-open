@@ -51,6 +51,25 @@ class ConfigurationTests(unittest.TestCase):
             with self.subTest(proxy=proxy), self.assertRaises(hud.Rejected):
                 self.configure(proxy=proxy)
 
+    def test_tunnel_proxy_is_control_plane_only_and_clearing_is_direct(self):
+        inherited = {'HTTP_PROXY': 'http://old:1', 'https_proxy': 'http://old:2',
+                     'MCP_HTTP_PROXY': 'http://old:3', 'NO_PROXY': 'example.com',
+                     'OTHER': 'retained'}
+        for proxy in ('http://127.0.0.1:7890', ''):
+            with self.subTest(proxy=proxy):
+                env, args = runtime.tunnel_proxy_settings(inherited, proxy)
+                for key in ('HTTP_PROXY', 'https_proxy', 'MCP_HTTP_PROXY'):
+                    self.assertNotIn(key, env)
+                self.assertEqual(env['NO_PROXY'], '127.0.0.1,localhost,::1')
+                self.assertEqual(env['no_proxy'], env['NO_PROXY'])
+                self.assertEqual(env['OTHER'], 'retained')
+                if proxy:
+                    self.assertEqual(env['AGENTHUD_CONTROL_PROXY'], proxy)
+                    self.assertEqual(args, ['--control-plane.http-proxy', 'env:AGENTHUD_CONTROL_PROXY'])
+                else:
+                    self.assertNotIn('AGENTHUD_CONTROL_PROXY', env)
+                    self.assertEqual(args, [])
+
     def test_status_does_not_disclose_secrets_even_when_listener_is_down(self):
         value = {'enabled': True, 'tunnelId': 'tunnel_fixture', 'runtimeApiKey': 'private-runtime',
                  'localToken': 'private-local', 'dotToken': 'private-dot', 'proxy': ''}
@@ -87,8 +106,10 @@ class ConfigurationTests(unittest.TestCase):
         with subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(1.5)'],
                               creationflags=flags) as owner:
             started = time.monotonic()
-            with patch.object(runtime.subprocess, 'Popen', side_effect=AssertionError('No service when disabled')):
+            with patch.object(runtime, 'suggested_proxy', return_value='') as suggested_proxy, \
+                    patch.object(runtime.subprocess, 'Popen', side_effect=AssertionError('No service when disabled')):
                 runtime.supervise(owner.pid)
+            suggested_proxy.assert_called()
             self.assertLess(time.monotonic() - started, 5)
 
 

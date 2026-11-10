@@ -73,11 +73,14 @@ def confirm(adapter, reply_id, source, challenge):
             return adapter.receipt(row['id'], source)
         if json.loads(row['native_receipt'] or '{}').get('state') in {'pending_hud', 'refused'}:
             raise Rejected('A reply not delivered by HUD cannot be confirmed')
-        sub = adapter._subscription()
-        event_id = 'receipt-' + uuid.uuid4().hex
+        sub = db.execute('SELECT * FROM subscriptions WHERE mailbox=?', (MAILBOX,)).fetchone()
+        active = adapter._active_subscription(sub)
+        event_id = 'receipt-' + uuid.uuid4().hex if active else None
         # Persist both proof and notification reservation before the network call.
         db.execute('UPDATE messages SET recipient_confirmed=?,receipt_state=?,receipt_event_id=? WHERE id=?',
-                   (adapter.clock(), 'reserved', event_id, row['id']))
+                   (adapter.clock(), 'reserved' if active else 'notification_unavailable', event_id, row['id']))
+    if not active:
+        return adapter.receipt(row['id'], source)
     event = {'eventId': event_id, 'name': EVENT, 'timestamp': timestamp(adapter.clock()),
              'cursor': None, 'data': {'kind': 'delivery_receipt', 'mailbox': MAILBOX,
              'message_id': row['id'], 'source': source,

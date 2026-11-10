@@ -89,6 +89,31 @@ class ReceiptTests(unittest.TestCase):
         receipts.confirm(self.adapter, self.reply['replyId'], fixtures.SOURCE, getattr(self, 'challenge', 'not-from-input'))
         self.assertEqual(len(self.transport.calls), before)
 
+    def test_confirmation_survives_expired_or_cancelled_subscription(self):
+        for mode in ('expired', 'cancelled'):
+            with self.subTest(mode=mode):
+                # Reset the fixture between cases, including its isolated database.
+                if mode == 'cancelled':
+                    self.tearDown()
+                    self.setUp()
+                self.received()
+                if mode == 'expired':
+                    self.now += 3601
+                else:
+                    self.adapter.unsubscribe(self.subscription())
+                before = len(self.transport.calls)
+                for source, challenge in ((fixtures.OTHER, self.challenge),
+                                          (fixtures.SOURCE, 'wrong-challenge')):
+                    with self.assertRaises(hud.Rejected):
+                        receipts.confirm(self.adapter, self.reply['replyId'], source, challenge)
+                    self.assertFalse(self.adapter.receipt('m-fixture')['recipientConfirmed'])
+                result = receipts.confirm(self.adapter, self.reply['replyId'], fixtures.SOURCE, self.challenge)
+                self.assertTrue(result['recipientConfirmed'])
+                self.assertEqual(result['deliveryReceiptState'], 'notification_unavailable')
+                self.assertTrue(self.adapter.receipt('m-fixture')['recipientConfirmed'])
+                self.assertEqual(receipts.confirm(self.adapter, self.reply['replyId'], fixtures.SOURCE, self.challenge), result)
+                self.assertEqual(len(self.transport.calls), before)
+
     def test_completed_native_return_cannot_be_overwritten(self):
         receipts.claim(self.adapter, 'm-fixture')
         receipts.complete(self.adapter, 'm-fixture', {'state': 'refused'})

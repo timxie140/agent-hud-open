@@ -266,6 +266,18 @@ def port_available():
             return False
 
 
+def tunnel_proxy_settings(env, proxy):
+    # The local MCP listener must never inherit a system or per-component proxy.
+    clean = {key: value for key, value in env.items()
+             if not key.upper().endswith('_PROXY') and key.upper() != 'NO_PROXY'}
+    clean['NO_PROXY'] = '127.0.0.1,localhost,::1'
+    clean['no_proxy'] = clean['NO_PROXY']
+    if proxy:
+        clean['AGENTHUD_CONTROL_PROXY'] = proxy
+        return clean, ['--control-plane.http-proxy', 'env:AGENTHUD_CONTROL_PROXY']
+    return clean, []
+
+
 def run_owned(alive):
     children, current = [], None
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
@@ -300,13 +312,14 @@ def run_owned(alive):
                     time.sleep(4)
                     continue
                 tunnel = bundle / ('tunnel-client.exe' if sys.platform == 'win32' else 'tunnel-client')
+                tunnel_env, proxy_args = tunnel_proxy_settings(env, config.get('proxy', ''))
                 child = subprocess.Popen([str(tunnel), 'run', '--control-plane.tunnel-id', config['tunnelId'],
                     '--control-plane.api-key', 'env:CONTROL_PLANE_API_KEY',
                     '--mcp.server-url', 'http://127.0.0.1:8787/mcp',
                     '--mcp.extra-headers', 'Authorization: env:HUD_DOT_UPSTREAM_AUTH',
                     '--mcp.discovery-extra-headers', 'Authorization: env:HUD_DOT_UPSTREAM_AUTH',
                     '--health.listen-addr', '127.0.0.1:0', '--health.url-file', str(hud.ROOT / 'tunnel-health.url'),
-                    '--log.http-raw-unsafe=false'], env=env, stdout=subprocess.PIPE,
+                    '--log.http-raw-unsafe=false', *proxy_args], env=tunnel_env, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, creationflags=flags)
                 children.append(child)
                 threading.Thread(target=_drain, args=(child.stdout,

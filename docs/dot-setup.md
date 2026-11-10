@@ -92,6 +92,8 @@ confirm_delivery({"id":"实际收到的回信reply_id","delivery_challenge":"实
 不能据查询文本调用 confirm_delivery。确认生成一条 `delivery_receipt` 事件通知 Luo；
 重复确认只读回原结果，不再发事件。平台 HTTP 2xx 仅为通知受理，Luo 仍可通过
 hud_get_delivery_status 读取持久的确认记录。丢失/不确定的通知不自动重发。
+若此时订阅已过期或被停止，合法收件确认仍会保存，通知状态为
+`notification_unavailable`；不会向失效订阅发送，也不会自动补发。
 
 | 状态 | 能证明什么 |
 | --- | --- |
