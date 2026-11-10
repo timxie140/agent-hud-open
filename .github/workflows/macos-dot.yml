@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: ['codex/windows-dot-luo']
+    paths-ignore:
+      - '.github/workflows/publish-dot-release.yml'
 
 permissions:
   contents: read
