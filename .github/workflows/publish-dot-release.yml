@@ -1,0 +1,131 @@
+name: Publish verified Dot release
+
+on:
+  push:
+    branches: ["codex/windows-dot-luo"]
+    paths: [".github/workflows/publish-dot-release.yml"]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-dot-0.6.1-dot.1
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      RELEASE_COMMIT: 94469fdbc95459585e31d4beeddd1451d8d19818
+      RELEASE_TAG: v0.6.1-dot.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_COMMIT }}
+          persist-credentials: false
+      - name: Test offline release validation
+        run: python3 -B -m unittest discover -s src/tooling -p test_prepare_dot_release.py -v
+      - name: Wait for both native builds and download exact artifacts
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const crypto = require('node:crypto');
+            const {owner, repo} = context.repo;
+            const target = process.env.RELEASE_COMMIT;
+            if (!/^[0-9a-f]{40}$/.test(target)) throw Error('Invalid build revision');
+            const required = [
+              {name: 'Windows desktop', path: '.github/workflows/windows.yml', artifact: 'agent-hud-open-windows-x86_64-unsigned', local: 'windows.zip'},
+              {name: 'macOS desktop with Dot', path: '.github/workflows/macos-dot.yml', artifact: 'agent-hud-dot-macos-unsigned', local: 'macos.zip'},
+            ];
+            const deadline = Date.now() + 100 * 60 * 1000;
+            let ready;
+            while (Date.now() < deadline) {
+              const {data} = await github.rest.actions.listWorkflowRunsForRepo({owner, repo, head_sha: target, branch: 'codex/windows-dot-luo', event: 'push', per_page: 50});
+              ready = required.map(spec => ({spec, run: data.workflow_runs.find(run => run.head_sha === target && run.name === spec.name && run.path === spec.path)}));
+              for (const {spec, run} of ready) {
+                if (run?.status === 'completed' && run.conclusion !== 'success') {
+                  throw Error(spec.name + ' did not pass: ' + run.html_url);
+                }
+              }
+              if (ready.every(item => item.run?.status === 'completed' && item.run.conclusion === 'success')) break;
+              ready = undefined;
+              await new Promise(resolve => setTimeout(resolve, 30000));
+            }
+            if (!ready) throw Error('Native build verification deadline exceeded');
+            fs.mkdirSync('release-downloads');
+            for (const {spec, run} of ready) {
+              const {data} = await github.rest.actions.listWorkflowRunArtifacts({owner, repo, run_id: run.id, per_page: 100});
+              const matches = data.artifacts.filter(item => item.name === spec.artifact && !item.expired);
+              if (matches.length !== 1) throw Error('Expected one verified artifact for ' + spec.name);
+              const artifact = matches[0];
+              if (artifact.workflow_run?.head_sha && artifact.workflow_run.head_sha !== target) throw Error('Artifact revision mismatch');
+              const download = await github.rest.actions.downloadArtifact({owner, repo, artifact_id: artifact.id, archive_format: 'zip'});
+              const bytes = Buffer.from(download.data);
+              const digest = 'sha256:' + crypto.createHash('sha256').update(bytes).digest('hex');
+              if (artifact.digest && digest !== artifact.digest) throw Error('Artifact transport checksum mismatch');
+              fs.writeFileSync('release-downloads/' + spec.local, bytes);
+              core.info(spec.name + ' verified: ' + run.html_url);
+            }
+      - name: Prepare verified release files and complete source
+        run: |
+          python3 -B src/tooling/prepare-dot-release.py --windows release-downloads/windows.zip --macos release-downloads/macos.zip --revision "$RELEASE_COMMIT" --out release-assets
+          git archive --format=zip --prefix=agent-hud-dot-0.6.1-dot.1/ --output=release-assets/agent-hud-dot-0.6.1-dot.1-source.zip "$RELEASE_COMMIT"
+          python3 -c 'import hashlib; from pathlib import Path; p=Path("release-assets/agent-hud-dot-0.6.1-dot.1-source.zip"); f=Path("release-assets/SHA256SUMS").open("a"); f.write(hashlib.sha256(p.read_bytes()).hexdigest()+"  "+p.name+"\n"); f.close()'
+      - name: Upload complete assets and publish prerelease
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const crypto = require('node:crypto');
+            const {owner, repo} = context.repo;
+            const target = process.env.RELEASE_COMMIT;
+            const tag = process.env.RELEASE_TAG;
+            try {
+              let {data: ref} = await github.rest.git.getRef({owner, repo, ref: 'tags/' + tag});
+              if (ref.object.type === 'tag') ref = {object: (await github.rest.git.getTag({owner, repo, tag_sha: ref.object.sha})).data.object};
+              if (ref.object.type !== 'commit' || ref.object.sha !== target) throw Error('Existing tag targets another revision');
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            const body = [
+              'Adds the native Dot/Luo client, direct HUD routing, recipient-confirmed delivery receipts, and Settings → Agents → Dot.',
+              '',
+              'Windows x86_64 and macOS Apple Silicon (arm64). Complete standalone runtime and independent tunnel are included; no Bridge dependency.',
+              '',
+              '**Unsigned prerelease.** CI and packaged-runtime checks passed. Real GUI/Keychain authorization and Luo end-to-end validation have not been claimed; perform them through normal platform permissions.',
+              '',
+              'Revision: `' + target + '`',
+              '[Chinese setup and receipt tutorial](https://github.com/' + owner + '/' + repo + '/blob/' + target + '/docs/dot-setup.md)',
+              '',
+              'Keep a single active client on a tunnel main channel. Stop the previous temporary Dot listener/tunnel before enabling the new HUD connection. Never paste credentials into chats or logs.',
+            ].join('\n');
+            const matches = (await github.paginate(github.rest.repos.listReleases, {owner, repo, per_page: 100})).filter(item => item.tag_name === tag);
+            if (matches.length > 1) throw Error('Multiple releases use the target tag');
+            let release = matches[0];
+            if (release && release.target_commitish !== target) throw Error('Existing release targets another revision');
+            if (!release) release = (await github.rest.repos.createRelease({owner, repo, tag_name: tag, target_commitish: target, name: 'Agent HUD Dot 0.6.1-dot.1 (unsigned)', body, draft: true, prerelease: true})).data;
+            const assets = (await github.rest.repos.listReleaseAssets({owner, repo, release_id: release.id, per_page: 100})).data;
+            const names = fs.readdirSync('release-assets').sort();
+            for (const name of names) {
+              const bytes = fs.readFileSync('release-assets/' + name);
+              const digest = 'sha256:' + crypto.createHash('sha256').update(bytes).digest('hex');
+              const existing = assets.find(asset => asset.name === name);
+              if (existing) {
+                let actual = existing.digest;
+                if (!actual) {
+                  const download = await github.rest.repos.getReleaseAsset({owner, repo, asset_id: existing.id, headers: {accept: 'application/octet-stream'}});
+                  actual = 'sha256:' + crypto.createHash('sha256').update(Buffer.from(download.data)).digest('hex');
+                }
+                if (existing.size !== bytes.length || actual !== digest) throw Error('Existing release asset differs: ' + name);
+              } else {
+                if (!release.draft) throw Error('Refusing to change an already-published incomplete release');
+                await github.rest.repos.uploadReleaseAsset({owner, repo, release_id: release.id, name, headers: {'content-type': 'application/octet-stream', 'content-length': bytes.length}, data: bytes});
+              }
+            }
+            if (assets.some(asset => !names.includes(asset.name))) throw Error('Unexpected assets on release');
+            if (release.draft) release = (await github.rest.repos.updateRelease({owner, repo, release_id: release.id, body, draft: false, prerelease: true})).data;
+            core.info('Published verified release: ' + release.html_url);
+            await core.summary.addLink('Download complete Dot release', release.html_url).write();
