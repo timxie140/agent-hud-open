@@ -174,7 +174,10 @@ impl Messaging {
             "confirm_delivery" => {
                 let caller = caller.ok_or("Actual receiving client identity is required")?;
                 let id = arguments["id"].as_str().ok_or("id is required")?;
-                self.confirm_dot(&caller, id)
+                let challenge = arguments["delivery_challenge"]
+                    .as_str()
+                    .ok_or("delivery_challenge is required")?;
+                self.confirm_dot(&caller, id, challenge)
             }
             _ => Err("Unknown local application tool".into()),
         }

@@ -80,7 +80,7 @@ export function DotDetail({
         </Button>
       </div>
       {error && <Notice>{error}</Notice>}
-      <Section plain>
+      <Section>
         <ToggleRow
           title={t("Enabled", "启用")}
           checked={enabled}

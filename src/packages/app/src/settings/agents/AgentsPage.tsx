@@ -60,8 +60,21 @@ export default function AgentsPage({
   useEffect(() => {
     if (active === false) return;
     let disposed = false;
+    let failed = false;
     const refresh = () => {
-      if (!disposed) void readDot().catch(() => {});
+      if (!disposed && !failed)
+        void readDot().catch((error) => {
+          failed = true;
+          if (!disposed)
+            setDot({
+              enabled: false,
+              running: false,
+              ready: false,
+              subscribed: false,
+              hasRuntimeApiKey: false,
+              notice: String(error),
+            });
+        });
     };
     refresh();
     const timer = setInterval(refresh, 10000);
@@ -69,7 +82,7 @@ export default function AgentsPage({
       disposed = true;
       clearInterval(timer);
     };
-  }, [active]);
+  }, [active, dot?.enabled ?? false]);
   // Found agents first; otherwise the order the runtime lists them in, so
   // the list never jumps when the panel order changes.
   const providers = [...snapshot.providers].sort(

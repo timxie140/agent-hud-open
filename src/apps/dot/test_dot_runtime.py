@@ -1,8 +1,11 @@
 import json
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import hud_dot as hud
 import dot_runtime as runtime
@@ -56,6 +59,37 @@ class ConfigurationTests(unittest.TestCase):
         serialized = json.dumps(result)
         for secret in ['private-runtime', 'private-local', 'private-dot', 'private network details']:
             self.assertNotIn(secret, serialized)
+
+    def test_readiness_does_not_claim_connection_while_control_plane_is_failing(self):
+        (hud.ROOT / 'tunnel-health.url').write_text('http://127.0.0.1:1234')
+        config = {'enabled': True, 'runtimeApiKey': 'fixture-only', 'proxy': ''}
+        ready = MagicMock(status=200)
+        health = MagicMock()
+        health.read.return_value = b'{"components":{"control-plane":{"status":"degraded","state":"backing_off"}}}'
+        connection = MagicMock()
+        connection.getresponse.side_effect = [ready, health]
+        with patch.object(runtime, 'rpc', return_value={'content':[{'text':'{"subscribed":true}'}]}), \
+                patch.object(runtime.http.client, 'HTTPConnection', return_value=connection):
+            result = runtime.status(config)
+        self.assertTrue(result['running'])
+        self.assertFalse(result['ready'])
+
+    def test_macos_suggests_only_existing_loopback_system_proxy(self):
+        output = 'HTTPEnable : 1\nHTTPProxy : 127.0.0.1\nHTTPPort : 7897\n'
+        with patch.object(runtime.sys, 'platform', 'darwin'), \
+                patch.dict(runtime.os.environ, {'HTTP_PROXY':'', 'HTTPS_PROXY':''}), \
+                patch.object(runtime.subprocess, 'run', return_value=MagicMock(stdout=output)):
+            self.assertEqual(runtime.suggested_proxy(), 'http://127.0.0.1:7897')
+
+    @unittest.skipUnless(sys.platform in ('win32', 'darwin'), 'Native process-exit registration')
+    def test_supervisor_watches_exact_owner_and_exits_without_starting_disabled_service(self):
+        flags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+        with subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(1.5)'],
+                              creationflags=flags) as owner:
+            started = time.monotonic()
+            with patch.object(runtime.subprocess, 'Popen', side_effect=AssertionError('No service when disabled')):
+                runtime.supervise(owner.pid)
+            self.assertLess(time.monotonic() - started, 5)
 
 
 class FakeKeychain:

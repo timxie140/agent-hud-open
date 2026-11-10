@@ -39,7 +39,11 @@ jobs:
       - run: pnpm run typecheck
       - run: pnpm run test:mcp
       - run: mkdir -p src/apps/desktop/src-tauri/resources
-      - run: cargo test --workspace --locked --no-fail-fast
+      - name: Test native macOS adapters
+        env:
+          # Preserve deadline assertions while limiting concurrent fixture startups.
+          RUST_TEST_THREADS: '2'
+        run: cargo test --workspace --locked --no-fail-fast
       - name: Build macOS application and disk image
         run: pnpm run build:macos -- --bundle
       - name: Record provenance and archive complete app

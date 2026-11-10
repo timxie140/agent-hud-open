@@ -337,9 +337,12 @@ class Adapter:
     def _subscription(self):
         with self.db() as db:
             row = db.execute('SELECT * FROM subscriptions WHERE mailbox=?', (MAILBOX,)).fetchone()
-        if not row or row['expires'] <= self.clock():
+        if not self._active_subscription(row):
             raise Rejected('Luo has no active verified subscription')
         return row
+
+    def _active_subscription(self, row):
+        return row is not None and (row['expires'] is None or row['expires'] > self.clock())
 
     def subscribe(self, params):
         if params.get('name') != EVENT:
@@ -357,14 +360,17 @@ class Adapter:
         sub_id = 'sub_' + hashlib.sha256(identity.encode()).hexdigest()[:32]
         with self.db() as db:
             existing = db.execute('SELECT * FROM subscriptions WHERE mailbox=?', (MAILBOX,)).fetchone()
-        if existing and existing['id'] != sub_id and existing['expires'] > self.clock():
+        if existing and existing['id'] != sub_id and self._active_subscription(existing):
             raise Rejected('Luo mailbox already bound; unsubscribe the existing chat first', reason='mailbox_already_bound')
-        ttl = params.get('ttlMs')
+        ttl = params.get('ttlMs', 3600000)
         if ttl is None:
-            ttl = 3600000
-        if not isinstance(ttl, (int, float)) or isinstance(ttl, bool) or ttl <= 0:
-            raise Rejected('Invalid subscription lifetime', reason='invalid_lifetime')
-        expires = self.clock() + min(ttl / 1000, 3600)
+            # Grant no expiration only when the authenticated platform explicitly
+            # requested it. An omitted lifetime keeps the bounded default.
+            expires = None
+        else:
+            if not isinstance(ttl, (int, float)) or isinstance(ttl, bool) or ttl <= 0:
+                raise Rejected('Invalid subscription lifetime', reason='invalid_lifetime')
+            expires = self.clock() + min(ttl / 1000, 3600)
         challenge = secrets.token_urlsafe(24)
         body = canonical({'type': 'verification', 'challenge': challenge}).encode()
         event_id = 'verify_' + uuid.uuid4().hex
@@ -393,11 +399,11 @@ class Adapter:
             db.execute('BEGIN IMMEDIATE')
             # UNIQUE mailbox prevents a second concurrent callback from taking over.
             current = db.execute('SELECT id,expires FROM subscriptions WHERE mailbox=?', (MAILBOX,)).fetchone()
-            if current and current['id'] != sub_id and current['expires'] > self.clock():
+            if current and current['id'] != sub_id and self._active_subscription(current):
                 raise Rejected('Luo mailbox binding changed during verification')
             db.execute('INSERT OR REPLACE INTO subscriptions VALUES(?,?,?,?,?)',
                        (sub_id, MAILBOX, url, self.encrypt(key), expires))
-        return {'id': sub_id, 'refreshBefore': timestamp(expires), 'cursor': None, 'truncated': False}
+        return {'id': sub_id, 'refreshBefore': timestamp(expires) if expires is not None else None, 'cursor': None, 'truncated': False}
 
     def unsubscribe(self, params):
         if params.get('name') != EVENT:
@@ -543,7 +549,7 @@ class Adapter:
             elif role == 'local' and name == 'hud_dot_status':
                 try:
                     sub = self._subscription()
-                    result = {'mailbox': MAILBOX, 'subscribed': True, 'expires': timestamp(sub['expires'])}
+                    result = {'mailbox': MAILBOX, 'subscribed': True, 'expires': timestamp(sub['expires']) if sub['expires'] is not None else None}
                 except Rejected:
                     result = {'mailbox': MAILBOX, 'subscribed': False}
                 result['adapterVersion'] = ADAPTER_VERSION

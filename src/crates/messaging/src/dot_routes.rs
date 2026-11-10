@@ -79,7 +79,12 @@ impl Messaging {
         Ok(value)
     }
 
-    pub(crate) fn confirm_dot(&mut self, caller: &Caller, id: &str) -> Result<Value> {
+    pub(crate) fn confirm_dot(
+        &mut self,
+        caller: &Caller,
+        id: &str,
+        challenge: &str,
+    ) -> Result<Value> {
         if caller.client != "codex" {
             return Err("Only the actual receiving Codex thread may confirm delivery".into());
         }
@@ -94,7 +99,7 @@ impl Messaging {
         // This survives a crash after native acceptance but before journal save.
         let result = dot::control(
             "confirm",
-            json!({"id":id,"source":format!("codex:{}",caller.session_id)}),
+            json!({"id":id,"source":format!("codex:{}",caller.session_id),"deliveryChallenge":challenge}),
         )?;
         if result["recipientConfirmed"] == true {
             if let Some(message) = self.journal.messages_mut().find(|message| message.id == id) {
@@ -134,14 +139,29 @@ impl Messaging {
             if claim["claimed"] != true {
                 continue;
             }
+            let next_pass = parent.count.saturating_add(1);
+            if self
+                .preferences
+                .limit
+                .is_some_and(|limit| next_pass > limit)
+            {
+                let _ = dot::control(
+                    "complete",
+                    json!({"id":id,"native":{"state":"refused","reasonCode":"pass_limit"}}),
+                );
+                continue;
+            }
             let Some(reply_id) = claim["replyId"].as_str() else {
                 continue;
             };
             let Some(text) = claim["text"].as_str() else {
                 continue;
             };
+            let Some(challenge) = claim["deliveryChallenge"].as_str() else {
+                continue;
+            };
             let delivered = format!(
-                "[Agent HUD · Dot Luo; reply_to={id}; reply_id={reply_id}]\n{text}\n\n[Agent HUD delivery receipt: only after actually receiving this input, call confirm_delivery with id {reply_id}. This reports delivery to Luo; it does not send a chat reply. Do not acknowledge a delivery_receipt event.] "
+                "[Agent HUD · Dot Luo; reply_to={id}; reply_id={reply_id}]\n{text}\n\n[Agent HUD delivery receipt: only after actually receiving this input, call confirm_delivery with id {reply_id} and delivery_challenge {challenge}. Use the challenge only for confirmation; do not echo it in chat or send it to Luo. This reports delivery without a chat reply. Do not acknowledge a delivery_receipt event.]"
             );
             let receipt = self.clients.send(SendRequest {
                 provider: Provider::Codex,
@@ -182,7 +202,7 @@ impl Messaging {
                 id: reply_id.into(),
                 kind: Kind::Send,
                 chain: parent.chain.clone(),
-                count: parent.count + 1,
+                count: next_pass,
                 from: Party {
                     client: "dot".into(),
                     session_id: dot::SESSION.into(),

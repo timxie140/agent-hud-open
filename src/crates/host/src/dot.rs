@@ -1,8 +1,16 @@
 //! Settings → Agents → Dot. No secret is returned to the webview.
 use serde_json::Value;
+use tauri::Manager;
 
 #[tauri::command]
-pub async fn native_dot(action: String, arguments: Option<Value>) -> Result<Value, String> {
+pub async fn native_dot(
+    app: tauri::AppHandle,
+    action: String,
+    arguments: Option<Value>,
+) -> Result<Value, String> {
+    if app.state::<super::AppState>().demo {
+        return Err("Dot connection settings are not available in demo mode".into());
+    }
     if !matches!(action.as_str(), "status" | "configure") {
         return Err("Unknown Dot settings operation".into());
     }

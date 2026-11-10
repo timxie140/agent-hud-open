@@ -576,7 +576,7 @@ fn an_uncertain_antigravity_send_is_not_reported_as_refused() {
 }
 
 #[test]
-fn the_group_lists_its_four_tools_only_while_it_is_on() {
+fn the_group_lists_its_tools_and_delivery_confirmation_only_while_it_is_on() {
     assert_eq!(Messaging::tools(false), json!({"tools":[]}));
     let names = Messaging::tools(true)["tools"]
         .as_array()
@@ -590,6 +590,7 @@ fn the_group_lists_its_four_tools_only_while_it_is_on() {
             "list_sessions",
             "send_message",
             "start_session",
+            "confirm_delivery",
             "get_message"
         ]
     );

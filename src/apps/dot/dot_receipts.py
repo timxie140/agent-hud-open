@@ -1,12 +1,16 @@
 """Durable HUD return outbox and explicit recipient-confirmed delivery receipts."""
 import json
+import hashlib
+import hmac
+import secrets
 import uuid
 
 
 def migrate(db):
     columns = {row[1] for row in db.execute('PRAGMA table_info(messages)')}
     for name, declaration in [('recipient_confirmed', 'REAL'),
-                              ('receipt_state', 'TEXT'), ('receipt_event_id', 'TEXT')]:
+                              ('receipt_state', 'TEXT'), ('receipt_event_id', 'TEXT'),
+                              ('delivery_challenge_hash', 'TEXT')]:
         if name not in columns:
             db.execute('ALTER TABLE messages ADD COLUMN ' + name + ' ' + declaration)
 
@@ -27,10 +31,12 @@ def claim(adapter, message_id):
         row = db.execute('SELECT * FROM messages WHERE id=?', (message_id,)).fetchone()
         if not row or not row['native_receipt'] or json.loads(row['native_receipt']).get('state') != 'pending_hud':
             return {'claimed': False}
-        db.execute('UPDATE messages SET native_receipt=? WHERE id=?',
-                   (canonical({'state': 'reserved', 'actualReceiptConfirmed': False}), message_id))
+        challenge = secrets.token_urlsafe(24)
+        db.execute('UPDATE messages SET native_receipt=?,delivery_challenge_hash=? WHERE id=?',
+                   (canonical({'state': 'reserved', 'actualReceiptConfirmed': False}),
+                    hashlib.sha256(challenge.encode()).hexdigest(), message_id))
     return {'claimed': True, 'id': row['id'], 'replyId': row['reply_id'],
-            'source': row['source'], 'text': row['reply_text']}
+            'source': row['source'], 'text': row['reply_text'], 'deliveryChallenge': challenge}
 
 
 def complete(adapter, message_id, native):
@@ -41,6 +47,8 @@ def complete(adapter, message_id, native):
     safe = {'state': native['state'], 'actualReceiptConfirmed': False}
     if isinstance(native.get('deliveryMode'), str):
         safe['deliveryMode'] = native['deliveryMode'][:40]
+    if native.get('reasonCode') in {'pass_limit', 'permission_denied', 'recipient_unavailable'}:
+        safe['reasonCode'] = native['reasonCode']
     with adapter.db() as db:
         db.execute('BEGIN IMMEDIATE')
         row = db.execute('SELECT native_receipt FROM messages WHERE id=?', (message_id,)).fetchone()
@@ -50,15 +58,21 @@ def complete(adapter, message_id, native):
     return adapter.receipt(message_id)
 
 
-def confirm(adapter, reply_id, source):
+def confirm(adapter, reply_id, source, challenge):
     from hud_dot import Rejected, canonical, timestamp, headers_for, EVENT, MAILBOX
     with adapter.db() as db:
         db.execute('BEGIN IMMEDIATE')
         row = db.execute('SELECT * FROM messages WHERE reply_id=?', (reply_id,)).fetchone()
         if not row or row['source'] != source:
             raise Rejected('Only the original recipient can confirm this reply')
+        if (not isinstance(challenge, str) or len(challenge) > 128
+                or not hmac.compare_digest(hashlib.sha256(challenge.encode()).hexdigest(),
+                                           row['delivery_challenge_hash'] or '')):
+            raise Rejected('The delivery challenge from the actual incoming message is required')
         if row['recipient_confirmed'] is not None:
             return adapter.receipt(row['id'], source)
+        if json.loads(row['native_receipt'] or '{}').get('state') in {'pending_hud', 'refused'}:
+            raise Rejected('A reply not delivered by HUD cannot be confirmed')
         sub = adapter._subscription()
         event_id = 'receipt-' + uuid.uuid4().hex
         # Persist both proof and notification reservation before the network call.
@@ -90,5 +104,5 @@ def internal(adapter, action, params):
     if action == 'complete':
         return complete(adapter, params.get('id'), params.get('native'))
     if action == 'confirm':
-        return confirm(adapter, params.get('id'), params.get('source'))
+        return confirm(adapter, params.get('id'), params.get('source'), params.get('deliveryChallenge'))
     raise Rejected('Unknown internal HUD operation', -32601)

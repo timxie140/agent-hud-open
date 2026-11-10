@@ -48,6 +48,7 @@ Keychain 可能要求用户授权；拒绝后须由用户处理，程序不会�
 将以下说明发送到现有 Luo（只需要首次设置，或实际订阅失效需要恢复时）：
 
 > 请订阅 Dot-HUD 的 `hud.message.created`，arguments 为 `{"mailbox":"luo"}`。
+> 若工作区和订阅工具支持，请显式请求 `ttlMs: null`，保留无固定到期的订阅。
 > data.kind 为 `message` 时，先调用 `hud_ack_message`，id 使用
 > data.message_id；需要回复时调用一次 `hud_reply`，id 仍用原消息 ID。
 > `hud_reply` 的 accepted/queued 仅表示投递受理，不代表 Codex 实际收到。
@@ -59,6 +60,8 @@ Keychain 可能要求用户授权；拒绝后须由用户处理，程序不会�
 订阅由平台提供的签名 callback 绑定到真实接收聊天。HUD 验证 challenge、
 HTTPS、公网地址和签名；代理方式仍将 callback 固定到已验证公网 IP，TLS 校验
 原域名，不允许 Fake-IP/私有地址或重定向。回调 URL 和签名秘密不会出现在日志中。
+显式 `ttlMs:null` 才授予无固定到期；省略时仍默认一小时并由平台刷新。工作区策略
+或平台任务被停止时不能靠本机伪造恢复；HUD 会显示等待订阅，须在原 Luo 中恢复。
 
 ## 4. Codex 像给 DSH 一样发送
 
@@ -80,10 +83,11 @@ Luo 回信作为真实输入到达原 Codex 线程后，消息 envelope 会给�
 此时调用：
 
 ```json
-confirm_delivery({"id":"实际收到的回信reply_id"})
+confirm_delivery({"id":"实际收到的回信reply_id","delivery_challenge":"实际输入中的挑战值"})
 ```
 
-只能由该回信的真实目标 Codex 线程确认。**读取 get_message 的答案不算实际收到**，
+只能由该回信的真实目标 Codex 线程确认。挑战值仅随真实输入传递，查询不会返回，
+数据库只保存其哈希；只用于确认，不在聊天中复述。**读取 get_message 的答案不算实际收到**，
 不能据查询文本调用 confirm_delivery。确认生成一条 `delivery_receipt` 事件通知 Luo；
 重复确认只读回原结果，不再发事件。平台 HTTP 2xx 仅为通知受理，Luo 仍可通过
 hud_get_delivery_status 读取持久的确认记录。丢失/不确定的通知不自动重发。

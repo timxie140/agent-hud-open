@@ -40,6 +40,19 @@ def suggested_proxy():
                     candidates.extend(part.partition('=')[2] if '=' in part else part for part in value.split(';'))
         except OSError:
             pass
+    elif sys.platform == 'darwin':
+        try:
+            output = subprocess.run(['/usr/sbin/scutil', '--proxy'], capture_output=True,
+                                    text=True, timeout=2).stdout
+            fields = dict(re.findall(r'^\s*(HTTPS?(?:Enable|Proxy|Port))\s*:\s*([^\r\n]+)', output, re.M))
+            for kind in ('HTTPS', 'HTTP'):
+                if fields.get(kind + 'Enable') == '1':
+                    host = fields.get(kind + 'Proxy', '').strip()
+                    if ':' in host and not host.startswith('['):
+                        host = '[' + host + ']'
+                    candidates.append('http://' + host + ':' + fields.get(kind + 'Port', ''))
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     for candidate in candidates:
         if candidate:
             value = candidate if '://' in candidate else 'http://' + candidate
@@ -120,6 +133,12 @@ def status(config):
                     response = connection.getresponse()
                     result['ready'] = response.status == 200
                     response.read(100)
+                    if result['ready']:
+                        connection.request('GET', '/health?details=true')
+                        response = connection.getresponse()
+                        details = json.load(response)
+                        plane = details.get('components', {}).get('control-plane', {})
+                        result['ready'] = plane.get('status') == 'ok' and plane.get('state') == 'polling'
                 finally:
                     connection.close()
     except Exception:
@@ -218,22 +237,21 @@ def supervise(hud_pid):
 
 def supervise_macos(hud_pid):
     import fcntl
+    import select
     with (hud.ROOT / 'supervisor.lock').open('a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
-        def identity():
-            result = subprocess.run(['ps', '-p', str(hud_pid), '-o', 'lstart='],
-                                    capture_output=True, text=True, timeout=2)
-            return result.stdout.strip() if result.returncode == 0 else ''
-        owner = identity()
-        if not owner:
-            return
-        def alive():
-            time.sleep(1)
-            return identity() == owner
-        run_owned(alive)
+        with select.kqueue() as watcher:
+            try:
+                watcher.control([select.kevent(hud_pid, filter=select.KQ_FILTER_PROC,
+                    flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                    fflags=select.KQ_NOTE_EXIT)], 0, 0)
+            except ProcessLookupError:
+                return
+            # Kernel process-exit registration, not PID polling or per-second ps.
+            run_owned(lambda: not watcher.control(None, 1, 1))
 
 
 def port_available():
@@ -265,6 +283,7 @@ def run_owned(alive):
                     current = None
                     time.sleep(4)
                     continue
+                (hud.ROOT / 'runtime-state.json').write_text('{"notice":null}')
                 env = {k: v for k, v in os.environ.items() if not k.startswith('HUD_DOT_')}
                 env.update(HUD_DOT_LOCAL_TOKEN=config['localToken'], HUD_DOT_DOT_TOKEN=config['dotToken'],
                            AGENTHUD_DOT_DATA=str(hud.ROOT), CONTROL_PLANE_API_KEY=config['runtimeApiKey'],
@@ -296,6 +315,7 @@ def run_owned(alive):
 
 
 def main():
+    sys.stdout.reconfigure(encoding='utf-8')
     if sys.platform != 'win32':
         os.umask(0o077)
     hud.ROOT.mkdir(parents=True, exist_ok=True)
