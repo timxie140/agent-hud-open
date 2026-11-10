@@ -26,9 +26,24 @@ def copy_runtime_licenses(output):
     python_license = next((path for path in (
         Path(sys.base_prefix) / 'LICENSE.txt', Path(sys.base_prefix) / 'LICENSE',
         Path(sys.base_prefix) / 'Resources/LICENSE.txt') if path.is_file()), None)
-    if python_license is None:
-        raise RuntimeError('Python runtime license missing')
-    shutil.copyfile(python_license, licenses / 'Python-LICENSE.txt')
+    target = licenses / 'Python-LICENSE.txt'
+    python_version = platform.python_version()
+    origin = 'installed Python distribution'
+    if python_license is not None:
+        shutil.copyfile(python_license, target)
+    else:
+        # python.org's macOS framework omits the plain-text root license file.
+        # Fetch only the license from the exact official CPython release tag.
+        origin = 'https://raw.githubusercontent.com/python/cpython/v' + python_version + '/LICENSE'
+        with urllib.request.urlopen(origin, timeout=30) as response:
+            data = response.read(262145)
+        if len(data) > 262144 or b'PYTHON SOFTWARE FOUNDATION LICENSE' not in data:
+            raise RuntimeError('Official Python runtime license unavailable')
+        target.write_bytes(data)
+    (licenses / 'Python-source.json').write_text(json.dumps({
+        'version': python_version, 'source': origin,
+        'sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
+    }, indent=2) + '\n', encoding='utf-8')
     # Include installed packager/dependency notices; no environment values or secrets.
     distributions = []
     for distribution in importlib.metadata.distributions():
