@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: publish-dot-0.6.1-dot.1
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   publish:
@@ -73,7 +73,19 @@ jobs:
         run: |
           python3 -B src/tooling/prepare-dot-release.py --windows release-downloads/windows.zip --macos release-downloads/macos.zip --revision "$RELEASE_COMMIT" --out release-assets
           git archive --format=zip --prefix=agent-hud-dot-0.6.1-dot.1/ --output=release-assets/agent-hud-dot-0.6.1-dot.1-source.zip "$RELEASE_COMMIT"
-          python3 -c 'import hashlib; from pathlib import Path; p=Path("release-assets/agent-hud-dot-0.6.1-dot.1-source.zip"); f=Path("release-assets/SHA256SUMS").open("a"); f.write(hashlib.sha256(p.read_bytes()).hexdigest()+"  "+p.name+"\n"); f.close()'
+          python3 - <<'PY'
+          import hashlib,re
+          from pathlib import Path
+          folder=Path('release-assets')
+          for path in list(folder.iterdir()):
+              name=re.sub(r'[^A-Za-z0-9._-]', '-', path.name)
+              if name != path.name:
+                  target=folder/name
+                  if target.exists(): raise RuntimeError('Release filename collision')
+                  path.rename(target)
+          paths=sorted(p for p in folder.iterdir() if p.name!='SHA256SUMS')
+          (folder/'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in paths),encoding='utf-8')
+          PY
       - name: Upload complete assets and publish prerelease
         uses: actions/github-script@v8
         with:
@@ -109,9 +121,11 @@ jobs:
             if (!release) release = (await github.rest.repos.createRelease({owner, repo, tag_name: tag, target_commitish: target, name: 'Agent HUD Dot 0.6.1-dot.1 (unsigned)', body, draft: true, prerelease: true})).data;
             const assets = (await github.rest.repos.listReleaseAssets({owner, repo, release_id: release.id, per_page: 100})).data;
             const names = fs.readdirSync('release-assets').sort();
+            const expectedAssets = new Map();
             for (const name of names) {
               const bytes = fs.readFileSync('release-assets/' + name);
               const digest = 'sha256:' + crypto.createHash('sha256').update(bytes).digest('hex');
+              expectedAssets.set(name, {size: bytes.length, digest});
               const existing = assets.find(asset => asset.name === name);
               if (existing) {
                 let actual = existing.digest;
@@ -125,7 +139,12 @@ jobs:
                 await github.rest.repos.uploadReleaseAsset({owner, repo, release_id: release.id, name, headers: {'content-type': 'application/octet-stream', 'content-length': bytes.length}, data: bytes});
               }
             }
-            if (assets.some(asset => !names.includes(asset.name))) throw Error('Unexpected assets on release');
+            const complete = (await github.rest.repos.listReleaseAssets({owner, repo, release_id: release.id, per_page: 100})).data;
+            if (complete.length !== names.length) throw Error('Release asset count mismatch');
+            for (const asset of complete) {
+              const expected = expectedAssets.get(asset.name);
+              if (!expected || asset.state !== 'uploaded' || asset.size !== expected.size || (asset.digest && asset.digest !== expected.digest)) throw Error('Release asset verification failed');
+            }
             if (release.draft) release = (await github.rest.repos.updateRelease({owner, repo, release_id: release.id, body, draft: false, prerelease: true})).data;
             core.info('Published verified release: ' + release.html_url);
             await core.summary.addLink('Download complete Dot release', release.html_url).write();
