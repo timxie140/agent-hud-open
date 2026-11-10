@@ -899,11 +899,14 @@ mod native {
         fs::create_dir_all(script.parent().unwrap()).unwrap(); // plain directory
         fs::write(
             &script,
-            r#"#!/usr/bin/env python3
-import json, sys, time
-message = json.loads(sys.stdin.readline())
-print(json.dumps({"id": message["id"], "result": {}}), flush=True)
-time.sleep(30)
+            r#"#!/bin/sh
+IFS= read -r message || exit 1
+case "$message" in *'"id":'*) ;; *) exit 1 ;; esac
+id=${message#*\"id\":}
+id=${id%%[!0-9]*}
+[ -n "$id" ] || exit 1
+printf '{"id":%s,"result":{}}\n' "$id"
+exec sleep 30
 "#,
         )
         .unwrap();
