@@ -26,6 +26,7 @@ Changes since `v0.6.1-dot.1`.
 - Restored discovery of existing DeepSeek Harness messaging targets outside the recent-session display window.
 - Clarified the local HUD and remote Dot tool descriptions and reply-direction errors.
 - Made macOS development packaging repeatable and preserved nested runtime layout and signing requirements.
+- Sealed public macOS testing bundles and all nested runtimes with explicit ad-hoc signatures, verified before packaging.
 
 ### Installation
 

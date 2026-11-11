@@ -32,7 +32,17 @@ test("personal Mac bundles defer signing until every nested resource is present"
   );
 });
 
-test("Windows, unsigned Mac, ad-hoc Mac and component builds keep their prior commands", () => {
+test("explicit ad-hoc Mac builds seal the complete bundle after Tauri", () => {
+  const plan = buildPlan(options, { APPLE_SIGNING_IDENTITY: "-" }, "darwin");
+  assert.deepEqual(plan.commands[0].args.slice(-3), [
+    "--no-sign",
+    "--bundles",
+    "app",
+  ]);
+  assert.equal(plan.commands[1].args.at(-1), "--ad-hoc");
+});
+
+test("Windows, unsigned Mac and component builds keep their prior commands", () => {
   for (const [settings, env, host] of [
     [
       { ...options, platform: "windows" },
@@ -40,7 +50,6 @@ test("Windows, unsigned Mac, ad-hoc Mac and component builds keep their prior co
       "win32",
     ],
     [options, {}, "darwin"],
-    [options, { APPLE_SIGNING_IDENTITY: "-" }, "darwin"],
     [
       options,
       { APPLE_SIGNING_IDENTITY: "Developer ID Application: fixture" },

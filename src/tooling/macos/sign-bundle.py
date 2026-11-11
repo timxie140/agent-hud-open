@@ -91,7 +91,7 @@ def sign(path, identity, temporary, values=None, executable=False):
     run(command + [str(path)])
 
 
-def sign_app(app, identity):
+def sign_app(app, identity, ad_hoc=False):
     app = app.resolve(strict=True)
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     main = app / 'Contents/MacOS' / info['CFBundleExecutable']
@@ -124,8 +124,10 @@ def sign_app(app, identity):
         for path, framework in sorted(targets, key=lambda pair: (-len(pair[0].parts), str(pair[0]))):
             executable = next((r['executable'] for r in records
                                if r['path'] == str(path.relative_to(app))), False)
-            sign(path, identity, temporary, None if framework else values[path], executable)
-        sign(app, identity, temporary, values[main], executable=True)
+            sign(path, identity, temporary, None if framework else values[path],
+                 executable and not ad_hoc)
+        # Ad-hoc code has no Team ID for hardened-runtime library validation.
+        sign(app, identity, temporary, values[main], executable=not ad_hoc)
     authority = None
     identity_type = None
     for path in [app] + files + frameworks:
@@ -134,6 +136,11 @@ def sign_app(app, identity):
                                  capture_output=True, text=True)
         chain = [line for line in details.stderr.splitlines()
                  if line.startswith(('Authority=', 'TeamIdentifier='))]
+        if ad_hoc:
+            if details.returncode or 'Signature=adhoc' not in details.stderr:
+                raise RuntimeError('Component is not ad-hoc signed: ' + str(path))
+            identity_type = 'Ad hoc'
+            continue
         if path == app:
             authority = chain
             identity_type = next((line.removeprefix('Authority=').split(':', 1)[0]
@@ -157,17 +164,23 @@ def main():
     parser.add_argument('--app', type=Path, required=True)
     parser.add_argument('--dmg-dir', type=Path, required=True)
     parser.add_argument('--dot-resources', type=Path, required=True)
+    parser.add_argument('--ad-hoc', action='store_true',
+                        help='Explicitly seal a public testing build without a publisher identity')
     args = parser.parse_args()
     if sys.platform != 'darwin':
         raise RuntimeError('Native macOS signing is required')
     identity = os.environ.get('APPLE_SIGNING_IDENTITY', '').strip()
-    if not identity or identity == '-':
+    if args.ad_hoc:
+        if identity not in ('', '-'):
+            raise RuntimeError('Ad-hoc mode cannot use a certificate identity')
+        identity = '-'
+    elif not identity or identity == '-':
         raise RuntimeError('A real local signing identity is required; no ad-hoc fallback')
     app = args.app.resolve(strict=True)
     if app.parent.name != 'macos' or app.parent.parent.name != 'bundle':
         raise RuntimeError('Sign only the newly generated Tauri bundle output')
     restore_dot_runtime(app, args.dot_resources)
-    result = sign_app(app, identity)
+    result = sign_app(app, identity, args.ad_hoc)
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     architecture = {'arm64': 'aarch64', 'x86_64': 'x64'}.get(
         ','.join(result['architecture']), 'universal')
