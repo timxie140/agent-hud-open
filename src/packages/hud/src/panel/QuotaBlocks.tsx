@@ -7,6 +7,7 @@ import type {
 } from "@agent-hud/protocol";
 import { blockRows, quotaRowKey, vendorKey, type HUDConfig } from "../model";
 import { SourceProviderBlock } from "./QuotaSection";
+import { DotConnectionBlock } from "./DotConnectionBlock";
 import { SourceBalances } from "./SourceBalances";
 import { blockLines, COMPACT_LEAST } from "./block-lines";
 import {
@@ -167,24 +168,27 @@ export function usePanelBlocks({
     [
       ...vendorNames.map((vendor) => ({
         key: vendor,
-        content: (
-          <SourceProviderBlock
-            vendor={vendor}
-            rows={blockRows(
-              rowsByVendor.get(vendor) ?? [],
-              config.panelLayout.blocks?.[vendor],
-            ).map((row) => ({ ...row, key: quotaRowKey(row) }))}
-            layout={config.panelLayout.blocks?.[vendor]}
-            snapshot={snapshot}
-            active={active}
-            now={Date.parse(snapshot.generatedAt)}
-            light={light}
-            Logo={Logo}
-            showReset={config.resetCountdown}
-            accountInfo={snapshot.accounts}
-            onStats={onStats}
-          />
-        ),
+        content:
+          vendorKey(vendor) === "dot" ? (
+            <DotConnectionBlock snapshot={snapshot} light={light} Logo={Logo} />
+          ) : (
+            <SourceProviderBlock
+              vendor={vendor}
+              rows={blockRows(
+                rowsByVendor.get(vendor) ?? [],
+                config.panelLayout.blocks?.[vendor],
+              ).map((row) => ({ ...row, key: quotaRowKey(row) }))}
+              layout={config.panelLayout.blocks?.[vendor]}
+              snapshot={snapshot}
+              active={active}
+              now={Date.parse(snapshot.generatedAt)}
+              light={light}
+              Logo={Logo}
+              showReset={config.resetCountdown}
+              accountInfo={snapshot.accounts}
+              onStats={onStats}
+            />
+          ),
       })),
       ...[...new Set(billing.map((account) => account.vendor))]
         .filter(

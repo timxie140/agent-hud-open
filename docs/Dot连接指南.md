@@ -100,7 +100,7 @@ HUD 的“首次连接 Dot”提供 **复制提示词** 按钮，自动按本机
 ```text
 请在这个已有 Dot 会话中使用已安装的 Dot-HUD-Mac 插件。先核对入口，只读调用 hud_list_sessions 确认机器；如果入口名称不同，请让我指出正确入口，不要选另一台机器。
 
-订阅 hud.message.created，arguments 为 {"mailbox":"dot"}。若已有该入口的事件任务，请核对并复用，不要重复订阅。首次创建任务时固定命名为“Dot-HUD 通信 · Mac”；已有任务若支持改名，也使用此名称。若平台不支持命名，请报告实际任务名。支持时显式请求 ttlMs: null。
+优先订阅 hud.message.created，arguments 为 {"mailbox":"dot"}。若当前工具不接受 dot，请报告实际支持的参数并询问我；不要自行猜测、切换参数或新建订阅。若已有该入口的事件任务，请核对并复用，不要重复订阅。首次创建任务时固定命名为“Dot-HUD 通信 · Mac”；已有任务若支持改名，也使用此名称。若平台不支持命名，请报告实际任务名。
 
 data.kind=message 时，实际收到事件后用 data.message_id 调用 hud_ack_message；需要回复时用同一 ID 调用一次 hud_reply。data.kind=delivery_receipt 时只记录，不 ACK、不回复。queued/steered 仅表示受理，不代表实际送达；可只读查询 hud_get_delivery_status，等待 recipientConfirmed=true。pending、refused 或 uncertain 时不要自动重发。
 
@@ -109,7 +109,7 @@ data.kind=message 时，实际收到事件后用 data.message_id 调用 hud_ack_
 
 新订阅统一使用 `mailbox: "dot"`。旧任务的 `mailbox: "luo"` 仍作为兼容别名接受，与 `dot` 指向同一个收件人，不会生成第二个邮箱；已有任务无需为改名重新订阅。`dot:luo` 是仍保留兼容的本机消息路由 ID，不是个人名字。
 
-订阅由平台生成并验证 callback 绑定到真实接收会话，不需要用户复制回调地址或签名秘密。省略 `ttlMs` 时，HUD 默认授予一小时并接受平台刷新；只有平台显式请求且 HUD 授予 `ttlMs: null`，才是无固定到期。工作区策略仍可撤销任务或权限。
+订阅由平台生成并验证 callback 绑定到真实接收会话，不需要用户复制回调地址或签名秘密。订阅期限由平台与服务端协商；HUD 默认授予一小时并接受平台自动刷新，普通提示词不要求指定到期参数，也不承诺永久订阅。工作区策略仍可撤销任务或权限。
 
 ## 6. 怎么判断连接、订阅和实际送达
 
