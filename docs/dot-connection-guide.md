@@ -22,7 +22,7 @@ If you use both Mac and Windows, create a separate tunnel and plugin for each co
 
 ## 2. Connect in HUD
 
-1. Install and open Agent HUD with Dot support.
+1. Download and open [Agent HUD with Dot support](https://github.com/timxie140/agent-hud-open/releases/latest).
 2. Open **Settings → Agents → Dot** and turn **Enabled** on.
 3. Enter the **Tunnel ID** and **Runtime API key** from the previous step.
 4. If you use a local HTTP proxy, enter its address, such as `http://127.0.0.1:7890`. Otherwise, leave it blank.
