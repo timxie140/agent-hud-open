@@ -35,7 +35,7 @@ ROOT = Path(os.environ.get('AGENTHUD_DOT_DATA', str(_data_home / 'AgentHUDPrivat
 EVENT = 'hud.message.created'
 MAILBOX = 'luo'
 LIMIT = 256 * 1024
-ADAPTER_VERSION = '0.2.0'
+ADAPTER_VERSION = '0.3.0'
 
 
 class Rejected(Exception):
@@ -309,10 +309,13 @@ def native_reply(source, message_id, reply_id, text):
 class Adapter:
     def __init__(self, database, post=webhook_post, clock=time.time,
                  encrypt=protect, decrypt=lambda x: protect(x, True), sink=native_reply,
-                 native_reply_wait=0):
+                 native_reply_wait=0, receipt_key=None):
         self.database, self.post, self.clock = str(database), post, clock
         self.encrypt, self.decrypt, self.sink = encrypt, decrypt, sink
         self.native_reply_wait = max(0, min(float(native_reply_wait), 6))
+        self.receipt_key = receipt_key if receipt_key is not None else secrets.token_bytes(32)
+        if not isinstance(self.receipt_key, bytes) or len(self.receipt_key) < 32:
+            raise Rejected('Protected native receipt key unavailable')
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS subscriptions ('
                        'id TEXT PRIMARY KEY, mailbox TEXT UNIQUE, callback TEXT, secret BLOB, expires REAL)')

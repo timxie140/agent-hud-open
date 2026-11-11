@@ -95,7 +95,7 @@ class ConfigurationTests(unittest.TestCase):
         rpc.assert_not_called()
         with patch.object(runtime, 'load_config', return_value=saved), \
                 patch.object(runtime, 'rpc') as rpc:
-            for action in ['send', 'pending', 'claim', 'confirm', 'sessions']:
+            for action in ['send', 'pending', 'claim', 'confirm', 'sessions', 'receipt_authorization']:
                 with self.subTest(action=action), self.assertRaises(hud.Rejected):
                     runtime.control({'action': action, 'arguments': {}})
             rpc.assert_not_called()

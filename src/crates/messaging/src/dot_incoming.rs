@@ -41,11 +41,17 @@ impl Messaging {
         let Some(id) = row["id"].as_str() else {
             return;
         };
-        let Ok(claim) = self.dot.call("claim", json!({"id":id})) else {
+        let Ok(claim) = self
+            .dot
+            .call("claim", json!({"id":id,"receiptProtocol":"native-v2"}))
+        else {
             return;
         };
         if claim["claimed"] != true {
             return;
+        }
+        if claim["receiptProtocol"] != "native-v2" {
+            return; // Unknown sidecar: keep the durable reservation, never send.
         }
         let Some(binding) = self.dot_target(row, &claim, host) else {
             self.refuse_dot(id, "recipient_unavailable");
@@ -63,11 +69,8 @@ impl Messaging {
             self.refuse_dot(id, "pass_limit");
             return;
         }
-        let (Some(delivery_id), Some(text), Some(challenge)) = (
-            claim["replyId"].as_str(),
-            claim["text"].as_str(),
-            claim["deliveryChallenge"].as_str(),
-        ) else {
+        let (Some(delivery_id), Some(text)) = (claim["replyId"].as_str(), claim["text"].as_str())
+        else {
             return;
         };
         let header = if let Some(parent) = &binding.parent {
@@ -78,7 +81,7 @@ impl Messaging {
         } else {
             format!("[Agent HUD · Dot Luo; message_id={delivery_id}]")
         };
-        let delivered = format!("{header}\n{text}\n\n[Agent HUD delivery receipt: only after actually receiving this input, call confirm_delivery with id {delivery_id} and delivery_challenge {challenge}. Use the challenge only for confirmation; do not echo it in chat or send it to Luo. This reports delivery without a chat reply. Do not acknowledge a delivery_receipt event.]");
+        let delivered = format!("{header}\n{text}");
         let receipt = self.clients.send(SendRequest {
             provider: Provider::Codex,
             session_id: binding.to.session_id.clone(),

@@ -36,8 +36,23 @@ impl Messaging {
             if !identifies {
                 continue;
             }
-            let Some(challenge) = receipt_challenge(input.text(), &message.id) else {
-                continue;
+            let source = format!("codex:{}", input.thread());
+            let challenge = if let Some(legacy) = receipt_challenge(input.text(), &message.id) {
+                legacy.to_owned()
+            } else {
+                let Ok(value) = self.dot.call(
+                    "receipt_authorization",
+                    json!({"id":message.id,"source":source}),
+                ) else {
+                    continue;
+                };
+                if value["receiptProtocol"] != "native-v2" {
+                    continue;
+                }
+                let Some(challenge) = value["deliveryChallenge"].as_str() else {
+                    continue;
+                };
+                challenge.to_owned()
             };
             if !self.journal.reserve_receipt(&message.id) {
                 continue;
@@ -48,7 +63,7 @@ impl Messaging {
             let result = self.dot.call(
                 "confirm",
                 json!({"id":message.id,
-                "source":format!("codex:{}", input.thread()), "deliveryChallenge":challenge}),
+                "source":source, "deliveryChallenge":challenge}),
             );
             if result.is_ok_and(|value| value["recipientConfirmed"] == true) {
                 if let Some(row) = self.journal.messages_mut().find(|row| row.id == message.id) {

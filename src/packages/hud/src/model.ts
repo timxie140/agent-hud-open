@@ -19,6 +19,7 @@ import {
   type QuotaDisplay,
 } from "@agent-hud/ui/format";
 export { agentVendorName } from "./agent-artwork";
+export { agentOrderBlocks } from "./agent-order-blocks.ts";
 
 export type HUDMode = "notch" | "simple";
 export type HUDEdge = "top" | "right" | "bottom" | "left";

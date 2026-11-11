@@ -36,10 +36,15 @@ fn connect(world: &mut World) -> Arc<Mutex<Dot>> {
                         "origin":if state.proactive {"dot"} else {"codex"}}])}})
                 }
                 "claim" => {
+                    assert_eq!(value["receiptProtocol"], "native-v2");
                     state.claimed = true;
                     json!({"claimed":true,"replyId":if state.proactive {&state.parent} else {"m-reply-fixture"},
                     "source":format!("codex:{}",state.target.as_deref().unwrap_or(CODEX)),"origin":if state.proactive {"dot"} else {"codex"},
-                    "text":"ACK isolated fixture","deliveryChallenge":"isolated-fixture-challenge-1234"})
+                    "text":"ACK isolated fixture","receiptProtocol":"native-v2"})
+                }
+                "receipt_authorization" => {
+                    assert_eq!(value["source"], format!("codex:{CODEX}"));
+                    json!({"receiptProtocol":"native-v2","deliveryChallenge":"isolated-fixture-challenge-1234"})
                 }
                 "complete" => {
                     state.native = value["native"].clone();
@@ -85,6 +90,18 @@ fn dot_flies_both_ways_reports_native_queue_and_waits_for_real_input() {
     );
     world.maintain(1_792_600_010_000);
     assert!(!dot.lock().unwrap().calls.iter().any(|c| c == "confirm"));
+    assert!(!dot
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .any(|c| c == "receipt_authorization"));
+    assert!(!world.codex.0.lock().unwrap()[0]
+        .text
+        .contains("delivery_challenge"));
+    assert!(!world.codex.0.lock().unwrap()[0]
+        .text
+        .contains("confirm_delivery"));
     let flights = flown(&world);
     assert_eq!(flights.len(), 2);
     assert_eq!(flights[0]["from"], "codex");
@@ -160,6 +177,8 @@ fn proactive_dot_selects_existing_codex_without_a_fake_mcp_caller_and_confirms_a
     assert!(sends[0]
         .text
         .starts_with("[Agent HUD · Dot Luo; message_id=m-proactive-fixture]"));
+    assert!(!sends[0].text.contains("delivery_challenge"));
+    assert!(!sends[0].text.contains("confirm_delivery"));
     drop(sends);
     let state = dot.lock().unwrap();
     assert_eq!(state.registry["sessions"].as_array().unwrap().len(), 1);
