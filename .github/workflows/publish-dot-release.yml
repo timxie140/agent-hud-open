@@ -78,7 +78,7 @@ jobs:
           from pathlib import Path
           folder=Path('release-assets')
           for path in list(folder.iterdir()):
-              name=re.sub(r'[^A-Za-z0-9._-]', '-', path.name)
+              name=re.sub(r'[^A-Za-z0-9._-]', '-', path.name).replace('_aarch64.dmg', '_arm64.dmg')
               if name != path.name:
                   target=folder/name
                   if target.exists(): raise RuntimeError('Release filename collision')
@@ -119,6 +119,45 @@ jobs:
             let release = matches[0];
             if (release && release.target_commitish !== target) throw Error('Existing release targets another revision');
             if (!release) release = (await github.rest.repos.createRelease({owner, repo, tag_name: tag, target_commitish: target, name: 'Agent HUD Dot 0.6.1-dot.1 (unsigned)', body, draft: true, prerelease: true})).data;
+            // This migration changes only an asset label and its checksum index.
+            if (!release.draft) {
+              const oldName = 'Agent-HUD_0.6.1-dot.1_aarch64.dmg';
+              const newName = 'Agent-HUD_0.6.1-dot.1_arm64.dmg';
+              const pendingName = 'SHA256SUMS.arm64.pending';
+              const remote = (await github.rest.repos.listReleaseAssets({owner, repo, release_id: release.id, per_page: 100})).data;
+              const oldMac = remote.find(asset => asset.name === oldName);
+              const newMac = remote.find(asset => asset.name === newName);
+              if ((!oldMac && !newMac) || (oldMac && newMac)) throw Error('Ambiguous macOS asset naming');
+              const mac = oldMac ?? newMac;
+              const macBytes = fs.readFileSync('release-assets/' + newName);
+              const digestOf = bytes => 'sha256:' + crypto.createHash('sha256').update(bytes).digest('hex');
+              if (mac.size !== macBytes.length || mac.digest !== digestOf(macBytes)) throw Error('macOS bytes differ; naming migration refused');
+              const wanted = fs.readFileSync('release-assets/SHA256SUMS');
+              const prior = Buffer.from(wanted.toString('utf8').replace(newName, oldName));
+              if (prior.equals(wanted)) throw Error('Missing expected macOS checksum entry');
+              const checksum = remote.find(asset => asset.name === 'SHA256SUMS');
+              let pending = remote.find(asset => asset.name === pendingName);
+              const alreadyCurrent = checksum?.digest === digestOf(wanted) && checksum.size === wanted.length;
+              if (!alreadyCurrent) {
+                if (checksum && (checksum.digest !== digestOf(prior) || checksum.size !== prior.length)) throw Error('Unexpected existing checksum file');
+                fs.writeFileSync('release-downloads/SHA256SUMS.before-arm64', prior);
+                if (pending) {
+                  if (pending.digest !== digestOf(wanted) || pending.size !== wanted.length || pending.state !== 'uploaded') throw Error('Unexpected pending checksum asset');
+                } else {
+                  pending = (await github.rest.repos.uploadReleaseAsset({owner, repo, release_id: release.id, name: pendingName, headers: {'content-type': 'application/octet-stream', 'content-length': wanted.length}, data: wanted})).data;
+                  if (pending.digest !== digestOf(wanted) || pending.size !== wanted.length || pending.state !== 'uploaded') throw Error('Replacement checksum upload verification failed');
+                }
+                if (oldMac) await github.rest.repos.updateReleaseAsset({owner, repo, asset_id: oldMac.id, name: newName});
+                if (checksum) await github.rest.repos.deleteReleaseAsset({owner, repo, asset_id: checksum.id});
+                await github.rest.repos.updateReleaseAsset({owner, repo, asset_id: pending.id, name: 'SHA256SUMS'});
+              } else {
+                if (oldMac) await github.rest.repos.updateReleaseAsset({owner, repo, asset_id: oldMac.id, name: newName});
+                if (pending) {
+                  if (pending.digest !== digestOf(wanted)) throw Error('Unexpected pending checksum asset');
+                  await github.rest.repos.deleteReleaseAsset({owner, repo, asset_id: pending.id});
+                }
+              }
+            }
             const assets = (await github.rest.repos.listReleaseAssets({owner, repo, release_id: release.id, per_page: 100})).data;
             const names = fs.readdirSync('release-assets').sort();
             const expectedAssets = new Map();
