@@ -348,7 +348,8 @@ def main():
         elif args.listen:
             from functools import partial
             config = load_config()
-            hud.serve(hud.Adapter(hud.ROOT / 'state.sqlite', post=partial(hud.webhook_post, proxy=config.get('proxy') or None)),
+            hud.serve(hud.Adapter(hud.ROOT / 'state.sqlite', post=partial(hud.webhook_post, proxy=config.get('proxy') or None),
+                                  native_reply_wait=6),
                       8787, config['localToken'], config['dotToken'])
         elif args.supervise:
             supervise(args.supervise)

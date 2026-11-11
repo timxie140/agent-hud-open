@@ -4,6 +4,10 @@ use super::*;
 use std::path::Path;
 
 mod desktop;
+mod observed;
+#[cfg(any(test, feature = "fixtures"))]
+pub use observed::fixture as received_input_fixture;
+pub use observed::ReceivedInput;
 // How a send reaches Codex: the desktop app's socket and the shared CLI
 // daemon on macOS and Linux; the desktop app's pipe and the queue on Windows.
 #[cfg(unix)]
@@ -23,6 +27,16 @@ pub trait CodexTransport: Send + Sync {
         request: &SendRequest,
         timeout: Duration,
     ) -> Result<Receipt>;
+    fn received_input(
+        &self,
+        _data: &Path,
+        _target: &SessionTarget,
+        _request: &str,
+        _fingerprint: &str,
+        _timeout: Duration,
+    ) -> Result<Option<ReceivedInput>> {
+        Ok(None)
+    }
 }
 /// The installed clients. With `queue` set, an `enqueue` that finds no
 /// shared daemon goes into Codex's queue through a short-lived app-server.
@@ -39,6 +53,16 @@ pub struct QueueRoute {
     pub applications: Vec<std::path::PathBuf>,
 }
 impl CodexTransport for NativeCodexTransport {
+    fn received_input(
+        &self,
+        data: &Path,
+        target: &SessionTarget,
+        request: &str,
+        fingerprint: &str,
+        timeout: Duration,
+    ) -> Result<Option<ReceivedInput>> {
+        observed::observe(data, target, request, fingerprint, timeout)
+    }
     fn deliver(
         &self,
         data: &Path,

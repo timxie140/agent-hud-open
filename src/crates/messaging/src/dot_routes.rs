@@ -26,7 +26,19 @@ impl Messaging {
         }
         let id = message_id();
         let source = format!("codex:{}", caller.session_id);
-        let sent = dot::control("send", json!({"id":id,"source":source,"text":text}));
+        let sender = party(host.snapshot, &caller.client, &caller.session_id);
+        let recipient = Party {
+            client: "dot".into(),
+            session_id: dot::SESSION.into(),
+            title: Some("Luo".into()),
+        };
+        let left = chain
+            .as_deref()
+            .map(|chain| self.left_of(chain, &caller.session_id))
+            .unwrap_or_else(|| caller.session_id.clone());
+        let sent = self
+            .dot
+            .call("send", json!({"id":id,"source":source,"text":text}));
         let (state, reason) = match sent {
             Ok(value) => (
                 if value["state"] == "webhook_accepted" {
@@ -43,12 +55,8 @@ impl Messaging {
             kind: Kind::Send,
             chain: chain.unwrap_or_else(|| id.clone()),
             count,
-            from: party(host.snapshot, &caller.client, &caller.session_id),
-            to: Party {
-                client: "dot".into(),
-                session_id: dot::SESSION.into(),
-                title: Some("Luo".into()),
-            },
+            from: sender.clone(),
+            to: recipient.clone(),
             form: self.form(),
             reply_to: reply_to.map(str::to_owned),
             request_id: id.clone(),
@@ -61,13 +69,20 @@ impl Messaging {
             answered: false,
             replied_by: None,
         });
+        (self.fly)(flight(
+            &sender,
+            &recipient,
+            same_session(&left, &caller.session_id),
+            false,
+            matches!(state, "refused" | "uncertain"),
+        ));
         Ok(
             json!({"id":id,"state":state,"reason":reason,"pass":count,"actualReceiptConfirmed":false}),
         )
     }
 
     pub(crate) fn get_dot(&self, message: &Message) -> Result<Value> {
-        let mut value = dot::control(
+        let mut value = self.dot.call(
             "get",
             json!({"id":message.id,
             "source":format!("codex:{}",message.from.session_id)}),
@@ -97,7 +112,7 @@ impl Messaging {
         }
         // The durable sidecar also binds reply_id to its original recipient.
         // This survives a crash after native acceptance but before journal save.
-        let result = dot::control(
+        let result = self.dot.call(
             "confirm",
             json!({"id":id,"source":format!("codex:{}",caller.session_id),"deliveryChallenge":challenge}),
         )?;
@@ -111,10 +126,11 @@ impl Messaging {
     }
 
     pub(crate) fn maintain_dot(&mut self, host: &Host<'_>, now: i64) {
-        if !self.preferences.enabled || !dot::enabled() {
+        if !self.preferences.enabled || !self.dot.enabled() {
             return;
         }
-        let Ok(value) = dot::control("pending", json!({})) else {
+        self.confirm_received_dot();
+        let Ok(value) = self.dot.call("pending", json!({})) else {
             return;
         };
         let Some(rows) = value["messages"].as_array() else {
@@ -133,7 +149,7 @@ impl Messaging {
             {
                 continue;
             }
-            let Ok(claim) = dot::control("claim", json!({"id":id})) else {
+            let Ok(claim) = self.dot.call("claim", json!({"id":id})) else {
                 continue;
             };
             if claim["claimed"] != true {
@@ -145,7 +161,7 @@ impl Messaging {
                 .limit
                 .is_some_and(|limit| next_pass > limit)
             {
-                let _ = dot::control(
+                let _ = self.dot.call(
                     "complete",
                     json!({"id":id,"native":{"state":"refused","reasonCode":"pass_limit"}}),
                 );
@@ -192,12 +208,12 @@ impl Messaging {
                     } else {
                         "accepted"
                     };
-                    (state, json!({"state":native,"deliveryMode":state}))
+                    (state, json!({"state":native,"deliveryMode":receipt.state}))
                 }
                 Err(_) => ("uncertain", json!({"state":"uncertain"})),
             };
             // Completion failure never releases a claimed send for another attempt.
-            let _ = dot::control("complete", json!({"id":id,"native":native}));
+            let _ = self.dot.call("complete", json!({"id":id,"native":native}));
             self.journal.add(Message {
                 id: reply_id.into(),
                 kind: Kind::Send,
@@ -221,6 +237,19 @@ impl Messaging {
                 answered: false,
                 replied_by: None,
             });
+            let sender = Party {
+                client: "dot".into(),
+                session_id: dot::SESSION.into(),
+                title: Some("Luo".into()),
+            };
+            let left = self.left_of(&parent.chain, &parent.from.session_id);
+            (self.fly)(flight(
+                &sender,
+                &parent.from,
+                same_session(&left, dot::SESSION),
+                false,
+                matches!(state, "refused" | "uncertain"),
+            ));
             if let Some(parent) = self.journal.messages_mut().find(|message| message.id == id) {
                 parent.replied_by = Some(reply_id.into());
                 parent.answered = true;

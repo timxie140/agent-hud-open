@@ -10,6 +10,8 @@
 //! The words are kept only while they are delivered: the journal keeps who sent
 //! what to whom, a fingerprint of the words and where the answer will be, and
 //! an answer is read again from the other session's transcript each time.
+mod dot_confirm;
+mod dot_port;
 mod dot_routes;
 mod flights;
 mod get;
@@ -26,19 +28,19 @@ mod tools;
 mod transcript;
 mod words;
 
-pub use preferences::{DEFAULT_LIMIT, Preferences};
+pub use preferences::{Preferences, DEFAULT_LIMIT};
 pub use transcript::{StoredTurn, Turns};
 
 use agent_hud_platform::delivery::{
-    self, CLAUDE_MESSAGES_OFF, DEEPSEEK_MESSAGES_OFF, DeliveryState, LocalClients, Operation,
-    PromptForm, Provider, SendRequest, SessionStarts, SessionTarget, StartReceipt, StartRequest,
+    self, DeliveryState, LocalClients, Operation, PromptForm, Provider, SendRequest, SessionStarts,
+    SessionTarget, StartReceipt, StartRequest, CLAUDE_MESSAGES_OFF, DEEPSEEK_MESSAGES_OFF,
 };
-pub use flights::Flight;
 use flights::flight;
+pub use flights::Flight;
 use journal::{Journal, Kind, Message, Party};
 use outcome::*;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use snapshot::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -101,6 +103,8 @@ pub type Follow = Arc<dyn Fn(StartReceipt) + Send + Sync>;
 pub type Fly = Arc<dyn Fn(Flight) + Send + Sync>;
 
 pub struct Messaging {
+    dot: dot_port::DotPort,
+    receipt_cursor: usize,
     /// The user's choices, as the snapshot of the call or look being
     /// answered says.
     preferences: Preferences,
@@ -124,6 +128,8 @@ impl Messaging {
         fly: Fly,
     ) -> Self {
         Self {
+            dot: dot_port::DotPort::default(),
+            receipt_cursor: 0,
             preferences: Preferences::default(),
             journal: Journal::load(directory.join("messaging/messages.json")),
             places,
@@ -189,10 +195,13 @@ impl Messaging {
     /// Whether any message still waits for something maintenance does: its
     /// delivery to be captured, or its answer to be thrown back.
     pub fn waiting(&self) -> bool {
-        self.journal.pending() || (self.preferences.enabled && agent_hud_platform::dot::enabled())
+        self.journal.pending() || (self.preferences.enabled && self.dot.enabled())
     }
     pub fn maintain(&mut self, host: &Host<'_>, now: i64) {
         self.preferences = Preferences::read(&host.snapshot["settings"]);
+        if self.preferences.enabled {
+            self.clients.update_targets(sessions_targets(host.snapshot));
+        }
         self.maintain_dot(host, now);
         let clients = self.clients.clone();
         let mut changed = self.journal.prune(now);

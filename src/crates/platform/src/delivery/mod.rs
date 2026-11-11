@@ -37,9 +37,11 @@ pub use antigravity::{
     NativeAntigravityTransport,
 };
 pub use claude::ClaudeChannel;
+#[cfg(any(test, feature = "fixtures"))]
+pub use codex::received_input_fixture;
 pub use codex::{
     desktop_installed as codex_desktop_installed, thread_open as codex_thread_open, CodexTransport,
-    NativeCodexTransport, QueueRoute,
+    NativeCodexTransport, QueueRoute, ReceivedInput,
 };
 pub use deepseek::DeepSeekChannel;
 pub use files::atomic_json;

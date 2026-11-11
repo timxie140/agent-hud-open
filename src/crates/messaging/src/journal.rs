@@ -2,6 +2,7 @@
 //! answer is. Never the words: only their fingerprint.
 use agent_hud_platform::delivery::{self, PromptForm};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 const KEPT_MS: i64 = 7 * 86_400_000;
@@ -71,27 +72,34 @@ pub struct Message {
 #[derive(Default, Serialize, Deserialize)]
 struct File {
     messages: Vec<Message>,
+    #[serde(default)]
+    receipt_attempts: BTreeSet<String>,
 }
 
 pub struct Journal {
     path: PathBuf,
     /// Oldest first.
     messages: Vec<Message>,
+    receipt_attempts: BTreeSet<String>,
 }
 impl Journal {
     pub fn load(path: PathBuf) -> Self {
-        let messages = std::fs::read(&path)
+        let file = std::fs::read(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<File>(&bytes).ok())
-            .unwrap_or_default()
-            .messages;
-        Self { path, messages }
+            .unwrap_or_default();
+        Self {
+            path,
+            messages: file.messages,
+            receipt_attempts: file.receipt_attempts,
+        }
     }
     pub fn save(&self) {
         let _ = delivery::atomic_json(
             &self.path,
             &File {
                 messages: self.messages.clone(),
+                receipt_attempts: self.receipt_attempts.clone(),
             },
         );
     }
@@ -107,6 +115,34 @@ impl Journal {
     }
     pub fn find(&self, id: &str) -> Option<&Message> {
         self.messages.iter().find(|message| message.id == id)
+    }
+    pub fn receipt_pending(&self) -> Vec<Message> {
+        self.messages
+            .iter()
+            .filter(|message| {
+                message.from.client == "dot"
+                    && message.to.client == "codex"
+                    && !message.answered
+                    && !self.receipt_attempts.contains(&message.id)
+                    && !matches!(message.state.as_str(), "refused" | "expired")
+            })
+            .cloned()
+            .collect()
+    }
+    /// Persist before confirmation. A crash or uncertain notification must
+    /// never result in an automatic second attempt. No challenge is stored.
+    pub fn reserve_receipt(&mut self, id: &str) -> bool {
+        if !self.receipt_attempts.insert(id.into()) {
+            return false;
+        }
+        delivery::atomic_json(
+            &self.path,
+            &File {
+                messages: self.messages.clone(),
+                receipt_attempts: self.receipt_attempts.clone(),
+            },
+        )
+        .is_ok()
     }
     /// What `session` was sent and did not refuse, newest first.
     pub fn received<'a>(
@@ -152,6 +188,8 @@ impl Journal {
         let before = self.messages.len();
         self.messages
             .retain(|message| message.sent_at_ms >= now - KEPT_MS);
+        self.receipt_attempts
+            .retain(|id| self.messages.iter().any(|message| &message.id == id));
         self.messages.len() != before
     }
 }

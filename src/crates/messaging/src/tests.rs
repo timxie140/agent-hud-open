@@ -3,6 +3,8 @@
 //! whatever is queued, Agent HUD's Claude Code and DeepSeek Harness plugins
 //! as their folders, and a Claude Code that runs no process for starts.
 use super::*;
+#[path = "dot_tests.rs"]
+mod dot_tests;
 use agent_hud_core::conversation_feed::{Batch, Fact, Item, Kind as FeedKind, Role};
 use agent_hud_platform::delivery::{
     fixtures::{StartFixture, SESSION as STARTED},
@@ -41,8 +43,34 @@ fn compressed(session: &str) -> bool {
 
 /// A Codex that queues what it is given and remembers it.
 #[derive(Default)]
-struct Codex(Mutex<Vec<SendRequest>>);
+struct Codex(Mutex<Vec<SendRequest>>, AtomicBool);
 impl CodexTransport for Codex {
+    fn received_input(
+        &self,
+        _data: &Path,
+        target: &SessionTarget,
+        request: &str,
+        fingerprint: &str,
+        _timeout: Duration,
+    ) -> delivery::Result<Option<delivery::ReceivedInput>> {
+        if !self.1.load(AtomicOrdering::SeqCst) {
+            return Ok(None);
+        }
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.request_id == request && transcript::fingerprint(&r.text) == fingerprint)
+            .map(|r| {
+                delivery::received_input_fixture(
+                    target.thread_id.as_deref().unwrap(),
+                    request,
+                    "received-turn",
+                    &r.text,
+                )
+            }))
+    }
     fn deliver(
         &self,
         _data: &Path,

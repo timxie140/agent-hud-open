@@ -8,6 +8,20 @@ export function loadArtwork(
   key: string,
   light: boolean,
 ): Promise<HTMLCanvasElement | null> {
+  if (agentArtworkKey(key) === "dot") {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 256;
+    const context = canvas.getContext("2d")!;
+    context.strokeStyle = context.fillStyle = light ? "#1d1d1f" : "#ffffff";
+    context.lineWidth = 18;
+    context.beginPath();
+    context.arc(128, 128, 92, 0, Math.PI * 2);
+    context.stroke();
+    context.beginPath();
+    context.arc(128, 128, 20, 0, Math.PI * 2);
+    context.fill();
+    return Promise.resolve(canvas);
+  }
   const artwork = agentArtwork(key, light);
   if (!artwork) return Promise.resolve(null);
   const url = artwork.url;

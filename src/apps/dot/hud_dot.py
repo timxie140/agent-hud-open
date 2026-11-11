@@ -308,9 +308,11 @@ def native_reply(source, message_id, reply_id, text):
 
 class Adapter:
     def __init__(self, database, post=webhook_post, clock=time.time,
-                 encrypt=protect, decrypt=lambda x: protect(x, True), sink=native_reply):
+                 encrypt=protect, decrypt=lambda x: protect(x, True), sink=native_reply,
+                 native_reply_wait=0):
         self.database, self.post, self.clock = str(database), post, clock
         self.encrypt, self.decrypt, self.sink = encrypt, decrypt, sink
+        self.native_reply_wait = max(0, min(float(native_reply_wait), 6))
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS subscriptions ('
                        'id TEXT PRIMARY KEY, mailbox TEXT UNIQUE, callback TEXT, secret BLOB, expires REAL)')
@@ -457,10 +459,14 @@ class Adapter:
         native = json.loads(row['native_receipt']) if row['native_receipt'] else None
         if native is not None and row['recipient_confirmed'] is not None:
             native['actualReceiptConfirmed'] = True
+        transport = native.get('deliveryMode', native.get('state')) if native else None
+        if transport == 'reserved':
+            transport = 'pending_hud'
         return {'id': row['id'], 'state': row['state'], 'source': row['source'],
                 'dotAcknowledged': row['acknowledged'] is not None, 'replyId': row['reply_id'],
                 'replyText': row['reply_text'],
                 'nativeReceipt': native,
+                'transportState': transport,
                 'recipientConfirmed': row['recipient_confirmed'] is not None,
                 'deliveryReceiptState': row['receipt_state']}
 
@@ -496,6 +502,15 @@ class Adapter:
         with self.db() as db:
             db.execute('UPDATE messages SET state=?,native_receipt=? WHERE id=?',
                        ('dot_replied', canonical(native), message_id))
+        # The HUD's existing worker owns native delivery. Wait only for its
+        # acknowledgement; never reserve, deliver or retry from this HTTP thread.
+        deadline = time.monotonic() + self.native_reply_wait
+        while self.native_reply_wait:
+            current = self.receipt(message_id)
+            state = (current.get('nativeReceipt') or {}).get('state')
+            if state not in {'pending_hud', 'reserved'} or time.monotonic() >= deadline:
+                return current
+            time.sleep(min(0.05, max(0, deadline - time.monotonic())))
         return self.receipt(message_id)
 
     def rpc(self, role, request):
@@ -522,7 +537,7 @@ class Adapter:
             return self.subscribe(params) if method.endswith('/subscribe') else self.unsubscribe(params)
         if method == 'tools/list':
             definitions = [('hud_ack_message', ['id'], 'Confirm a HUD event you actually received.'),
-                           ('hud_reply', ['id', 'text'], 'Reply once to a received HUD message. Acceptance is not delivery; await delivery_receipt or query hud_get_delivery_status.'),
+                           ('hud_reply', ['id', 'text'], 'Reply once. transportState reports native queued/steered/started, or pending_hud while awaiting HUD. Never resend on pending/uncertain; recipientConfirmed is separate. Await delivery_receipt or query hud_get_delivery_status.'),
                            ('hud_get_delivery_status', ['id'], 'Read whether the actual recipient confirmed your reply. Read-only; never acknowledges delivery.')]
             if role == 'local':
                 definitions = [('hud_dot_status', [], 'Check whether Luo has a verified event subscription.'),

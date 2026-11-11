@@ -36,8 +36,10 @@ impl Messaging {
                 })
             })
             .collect::<Vec<_>>();
-        let dot = if agent_hud_platform::dot::enabled() {
-            agent_hud_platform::dot::status()
+        let dot = if self.dot.enabled() {
+            self.dot
+                .call("status", json!({}))
+                .unwrap_or_else(|_| json!({"enabled":true,"ready":false,"subscribed":false}))
         } else {
             json!({"enabled":false})
         };

@@ -168,6 +168,50 @@ pub(super) fn deliver(
         Some(owner),
     )))
 }
+pub(super) fn owned_snapshot(
+    data: &Path,
+    thread: &str,
+    timeout: Duration,
+) -> Result<Option<Value>> {
+    let mut connection =
+        match DesktopIpc::connect(&crate::clients::codex::desktop_io::endpoint(data), timeout) {
+            Ok(value) => value,
+            Err(IpcError::Unavailable) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+    let initialized = connection.request(
+        "initialize",
+        0,
+        "initializing-client",
+        None,
+        json!({"clientType":"agent-hud"}),
+        None,
+    )?;
+    let client = initialized["result"]["clientId"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| Failure::Protocol("Desktop initialization identity".into()))?
+        .to_owned();
+    let discovery = match connection.request(
+        "thread-owner-discovery",
+        1,
+        &client,
+        None,
+        json!({"hostId":"local","conversationId":thread}),
+        None,
+    ) {
+        Ok(value) => value,
+        Err(IpcError::Rejected(reason)) if reason == "no-client-found" => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let owner = discovery["handledByClientId"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| Failure::Protocol("Desktop owner identity".into()))?
+        .to_owned();
+    desktop_snapshot(&mut connection, &client, &owner, thread).map(Some)
+}
+
 fn desktop_snapshot(
     connection: &mut DesktopIpc,
     client: &str,

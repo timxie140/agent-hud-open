@@ -1,5 +1,5 @@
-import { Terminal } from "lucide-react";
-import { agentArtwork } from "./agent-artwork";
+import { CircleDot, Terminal } from "lucide-react";
+import { agentArtwork, agentArtworkKey } from "./agent-artwork";
 
 export interface HUDArtworkProps {
   source: string;
@@ -26,7 +26,11 @@ export function HUDArtwork({
           flexShrink: 0,
         }}
       >
-        <Terminal aria-hidden="true" size={size * 0.75} strokeWidth={1.6} />
+        {agentArtworkKey(source) === "dot" ? (
+          <CircleDot aria-hidden="true" size={size * 0.85} strokeWidth={1.8} />
+        ) : (
+          <Terminal aria-hidden="true" size={size * 0.75} strokeWidth={1.6} />
+        )}
       </span>
     );
   if (artwork.tint)

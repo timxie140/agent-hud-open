@@ -78,7 +78,18 @@ get_message({"id":"发送返回的消息ID"})
 消息源来自 Codex MCP 执行器的真实线程元数据，不接受模型任意指定另一线程。
 没有可识别发送身份、未启用、无有效订阅或权限关闭时拒绝，不能换身份绕过。
 
-### 收件 Codex 的最后一步
+### 原生投递反馈与实际收件确认
+
+`hud_reply` 会短暂等待已有 HUD 投递器的结果，返回 `transportState`：
+`queued` / `steered` / `started` 保留原生客户端的真实反馈。
+仍未处理时返回 `pending_hud`；`refused` / `uncertain` 不会自动重发。
+反馈超时不撤销已有投递，也不证明失败，可只读查询 `hud_get_delivery_status`。
+
+HUD 在原 Codex Desktop owner 的规范输入记录中核对目标线程、请求 ID 和完整输入指纹后，
+会自动提交最终确认。队列、RPC 受理、乐观 UI 状态和回复查询均不能触发确认。
+没有可验证 owner、输入记录尚未进入规范历史或客户端格式不受支持时保持未确认，
+并保留以下手动工具途径。原生观察只读，不创建或恢复替代聊天。
+自动确认先持久保留尝试，同一回信只尝试一次；崩溃或不确定结果不自动补发通知。
 
 Luo 回信作为真实输入到达原 Codex 线程后，消息 envelope 会给出 `reply_id`。
 此时调用：
@@ -101,10 +112,14 @@ hud_get_delivery_status 读取持久的确认记录。丢失/不确定的通知�
 | dotAcknowledged=true | Luo 调用了实际接收确认 |
 | replyId / replyText | Luo 调用了主动回复工具 |
 | nativeReceipt accepted | 原生 HUD 接受了回程投递 |
-| recipientConfirmed=true | 接收 Codex 在真实收到后提交了最终确认 |
+| recipientConfirmed=true | 真实收件输入已由原生 owner 验证，或收件 Codex 已提交合法最终确认 |
 
 本服务不把原生 accepted、查询结果或模型自行复述当作最终送达确认。
 退出或崩溃后已经保留的投递 reservation 不会自动重新发送。
+
+启用 Dot 后，HUD 智能体条可显示独立的 Dot 圆点标识及连接状态，收发复用纸飞机动画。
+若个人 HUD 布局限定了智能体列表，需在布局中选入 Dot；不会覆盖已有显示偏好。
+Dot 没有用量配额，不显示虚构的 token、余额或额度。
 
 ## 5. 故障排查与运行数据
 

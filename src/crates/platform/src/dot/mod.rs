@@ -1,5 +1,5 @@
 //! The packaged Dot sidecar; credentials cross stdin, never process arguments.
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -16,6 +16,9 @@ mod host;
 mod host;
 
 pub const SESSION: &str = "dot:luo";
+pub fn supported() -> bool {
+    host::SUPPORTED
+}
 
 pub fn enabled() -> bool {
     let folder = if let Some(path) = std::env::var_os("AGENTHUD_DOT_DATA") {

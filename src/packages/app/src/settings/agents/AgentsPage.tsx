@@ -85,9 +85,9 @@ export default function AgentsPage({
   }, [active, dot?.enabled ?? false]);
   // Found agents first; otherwise the order the runtime lists them in, so
   // the list never jumps when the panel order changes.
-  const providers = [...snapshot.providers].sort(
-    (a, b) => Number(b.detected) - Number(a.detected),
-  );
+  const providers = snapshot.providers
+    .filter((p) => p.id !== "dot")
+    .sort((a, b) => Number(b.detected) - Number(a.detected));
   providers.push({
     id: "dot",
     name: "Dot",
