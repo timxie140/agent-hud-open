@@ -16,6 +16,11 @@ Dot 是 HUD 中独立的通信客户端，不能当作 Codex 会话或用一个�
    Windows 用当前用户 DPAPI，macOS 用登录 Keychain；无法访问安全存储时失败关闭，
    不回退成明文文件。留空密钥输入框会保留原密钥，不会清除或回显。
 
+保存并启用后，“保存并连接”右侧显示“停止连接”。点击会保存禁用状态，
+停止本 HUD 自有的 listener 与 tunnel，不会保存表单中尚未提交的 Tunnel、密钥或代理修改。
+已保存配置和既有订阅保留；停止期间不再通过本机 Dot 投递新消息，但无法撤回已经受理的消息。
+重新连接时开启“启用”并保存。停止本机连接不等于删除 ChatGPT 的订阅任务。
+
 状态依次为启动、连接隧道、等待 Luo 订阅、已连接 Luo。启用不等于订阅成功。
 全局“智能体消息”权限仍须由用户允许，Dot 不会自动打开或绕过该权限。
 
@@ -63,6 +68,18 @@ HTTPS、公网地址和签名；代理方式仍将 callback 固定到已验证�
 原域名，不允许 Fake-IP/私有地址或重定向。回调 URL 和签名秘密不会出现在日志中。
 显式 `ttlMs:null` 才授予无固定到期；省略时仍默认一小时并由平台刷新。工作区策略
 或平台任务被停止时不能靠本机伪造恢复；HUD 会显示等待订阅，须在原 Luo 中恢复。
+
+### 取消平台订阅
+
+在 ChatGPT 的 **Scheduled（计划任务）** 中找到原 Luo 对应的事件任务，使用该任务的
+停用或删除操作；清空事件列表不是退订方式。不要删除 Luo 聊天或新建重复订阅。
+平台协议 `events/unsubscribe` 使用原事件名 `hud.message.created`、
+原参数 `{"mailbox":"luo"}` 和原 webhook 绑定来定位订阅，由平台提供原 callback，
+不需要用户读取或粘贴地址。HUD 已实现匹配退订，收到后下一轮状态刷新显示等待订阅。
+只暂停平台任务是否立即产生退订请求须核对实际结果，不能仅凭任务状态声称 HUD 已解绑。
+
+官方参考：[Dot 任务控制](https://learn.chatgpt.com/docs/dots/controls#stop-work)、
+[MCP Events 退订协议](https://developers.openai.com/plugins/build/mcp-events#stop-a-subscription)。
 
 ## 4. Codex 像给 DSH 一样发送
 
