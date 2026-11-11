@@ -117,6 +117,17 @@ class ConfigurationTests(unittest.TestCase):
             child.wait.assert_called_once_with(timeout=5)
             child.kill.assert_not_called()
 
+    def test_enable_uses_saved_details_without_resubmitting_credentials(self):
+        previous = {'enabled': False, 'tunnelId': 'tunnel_fixture', 'runtimeApiKey': 'fixture-key',
+                    'localToken': 'fixture-local', 'dotToken': 'fixture-dot',
+                    'proxy': 'http://127.0.0.1:7890', 'instance': 'fixture-instance'}
+        with patch.object(runtime, 'load_config', return_value=previous), \
+                patch.object(runtime, 'write_configuration') as write:
+            saved = runtime.save_config({'enabled': True})
+        self.assertEqual(saved, dict(previous, enabled=True))
+        self.assertEqual(json.loads(write.call_args.args[1]), saved)
+        self.assertEqual((hud.ROOT / 'enabled').read_text(), 'true')
+
     def test_readiness_does_not_claim_connection_while_control_plane_is_failing(self):
         (hud.ROOT / 'tunnel-health.url').write_text('http://127.0.0.1:1234')
         config = {'enabled': True, 'runtimeApiKey': 'fixture-only', 'proxy': ''}
