@@ -60,6 +60,19 @@ def copy_runtime_licenses(output):
         json.dumps(distributions, indent=2) + '\n', encoding='utf-8')
 
 
+def replace_output(staged, destination, backup):
+    """Publish a complete fresh tree; merging cannot replace framework symlinks."""
+    previous = destination.exists()
+    if previous:
+        destination.rename(backup)
+    try:
+        staged.rename(destination)
+    except OSError:
+        if previous:
+            backup.rename(destination)
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--out', required=True)
@@ -67,11 +80,13 @@ def main():
     machine = platform.machine().lower()
     arch = 'arm64' if machine in ('arm64', 'aarch64') else 'amd64' if machine in ('amd64', 'x86_64') else machine
     target, expected = RELEASES[(sys.platform, arch)]
-    output = Path(args.out).resolve()
-    output.mkdir(parents=True, exist_ok=True)
+    destination = Path(args.out).resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
     source = Path(__file__).resolve().parent
-    with tempfile.TemporaryDirectory(prefix='agent-hud-dot-build-') as temporary:
+    # Same filesystem permits rename and keeps the prior output intact on failure.
+    with tempfile.TemporaryDirectory(prefix='agent-hud-dot-build-', dir=destination.parent) as temporary:
         temporary = Path(temporary)
+        output = temporary / 'staged'
         subprocess.run([sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir',
             '--name', 'agent-hud-dot', '--distpath', str(temporary / 'dist'), '--workpath', str(temporary / 'work'),
             '--specpath', str(temporary), str(source / 'dot_runtime.py')], check=True, cwd=source)
@@ -97,8 +112,8 @@ def main():
                 name = Path(entry.filename).name
                 if name in {'tunnel-client', 'tunnel-client.exe', 'LICENSE', 'NOTICE',
                             'THIRD-PARTY-LICENSES.txt', 'SBOM.spdx.json'}:
-                    with bundle.open(entry) as incoming, (output / name).open('wb') as destination:
-                        shutil.copyfileobj(incoming, destination)
+                    with bundle.open(entry) as incoming, (output / name).open('wb') as outgoing:
+                        shutil.copyfileobj(incoming, outgoing)
                     selected.append(name)
         executable = output / ('tunnel-client.exe' if sys.platform == 'win32' else 'tunnel-client')
         if not executable.is_file():
@@ -110,6 +125,7 @@ def main():
             'archiveSha256': expected, 'bridgeRequired': False,
             'files': {name: hashlib.sha256((output / name).read_bytes()).hexdigest() for name in selected},
         }, indent=2) + '\n', encoding='utf-8')
+        replace_output(output, destination, temporary / 'previous')
     print('Packaged standalone Dot runtime for ' + target)
 
 

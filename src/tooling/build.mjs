@@ -83,19 +83,50 @@ export function buildPlan(options, env = process.env, host = process.platform) {
     if (!options.bundle) args.push("--no-bundle");
     if (options.debug) args.push("--debug");
   }
+  const personalMacBundle =
+    options.component === "desktop" &&
+    options.platform === "macos" &&
+    options.bundle &&
+    /^(Apple Development|Mac Developer):/.test(
+      env.APPLE_SIGNING_IDENTITY?.trim() || "",
+    );
+  if (personalMacBundle) args.push("--no-sign", "--bundles", "app");
+  const commands = [
+    {
+      command,
+      args,
+      cwd: root,
+      shell: host === "win32" && command === "pnpm",
+    },
+  ];
+  if (personalMacBundle) {
+    const target = resolve(root, env.CARGO_TARGET_DIR || "target");
+    const bundle = resolve(
+      target,
+      options.debug ? "debug" : "release",
+      "bundle",
+    );
+    commands.push({
+      command: env.PYTHON || "python3",
+      args: [
+        resolve(root, "src/tooling/macos/sign-bundle.py"),
+        "--app",
+        resolve(bundle, "macos/Agent HUD.app"),
+        "--dmg-dir",
+        resolve(bundle, "dmg"),
+        "--dot-resources",
+        resolve(root, "src/apps/desktop/src-tauri/resources/dot"),
+      ],
+      cwd: root,
+      shell: false,
+    });
+  }
   return {
     platform: options.platform,
     component: options.component,
     profile: options.debug ? "debug" : "release",
     bundle: options.bundle,
-    commands: [
-      {
-        command,
-        args,
-        cwd: root,
-        shell: host === "win32" && command === "pnpm",
-      },
-    ],
+    commands,
   };
 }
 

@@ -132,3 +132,30 @@ Windows 和 macOS 必须各在本机系统的 runner 构建，不能将交叉生
 
 CI 产物带源码 revision、runner 架构、校验文件。未配置开发者签名/公证时明确标记
 unsigned，CI 构建通过不等于该平台真实 GUI、Keychain 或完整聊天路径已人工验收。
+
+### macOS 本地开发签名
+
+本机已合法配置 Apple Development（或 Mac Developer）身份时，仅为当前构建
+进程设置完整身份名称到 `APPLE_SIGNING_IDENTITY`，
+再执行 `pnpm run build:macos -- --bundle`。`PYTHON` 可指向 checkout 外的独立
+Python 3.12 venv。身份、证书和凭据不得写进共享配置或提交。
+
+该入口先由 Tauri 构建完整 app，并从冻结产物恢复 Tauri 资源复制时丢失的
+Python framework 符号链接，再逐一签名其中的 Mach-O、Python framework，
+最后签主 app。可执行文件保留自己的 entitlements；Bun MCP 单独增加 JIT 权限。
+framework/动态库不使用主 app 的 entitlements 或 provisioning profile。
+每个组件都核对架构、签名身份和严格验证，再执行主 app 的递归严格验证。
+DMG 使用 `hdiutil` 包装已签名 app，不调用 Finder、不清除扩展属性。
+签名记录写在 bundle 外的 `bundle/dmg/local-signature.json`。
+
+此开发签名路径不提交公证，也不自动回退 ad-hoc。免费 Personal Team 的
+Apple Development 签名仅供本人开发测试，不代表 Developer ID 分发或 Apple 公证；
+Gatekeeper 的系统评估应单独记录，拒绝时使用系统支持的授权流程。
+签名后勿再修改 bundle；本地产物使用自己的 SHA256，不与发行包的哈希混用。
+
+资源打包先在同一文件系统的临时目录完成冻结、冒烟和来源校验，再替换生成目录。
+这样重复构建不会合并旧 Python framework 的符号链接或残留旧库；失败保留上次产物。
+
+参考：[Tauri 签名配置](https://v2.tauri.app/distribute/sign/macos/)、
+[Apple 嵌套签名顺序](https://developer.apple.com/documentation/xcode/using-the-latest-code-signature-format)、
+[Bun 可执行文件签名](https://bun.sh/docs/compiler/executables#code-signing-on-macos)。
