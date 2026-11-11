@@ -313,9 +313,19 @@ The workspace layout, the MCP client configuration and the other commands are in
 
 </details>
 
+## Connect Dot
+
+Connect your Dot in ChatGPT to Codex chats through Agent HUD on Mac or Windows.
+
+1. In **Settings → Agents → Dot**, enable Dot, enter your Tunnel ID and a Restricted runtime API key with **Tunnels Read + Use** permissions, then select **Save and connect**.
+2. In ChatGPT, open **Plugins → ＋ → Add custom MCP server**. Name it **Dot-HUD-Mac** or **Dot-HUD-Win**, choose **Tunnel**, select the same tunnel, and set Authentication to **No authentication**. Add and install the plugin, then enable it in your Dot.
+3. In HUD, select **Copy prompt** under **Connect your Dot once** and send it to Dot. Setup is complete when HUD shows **Connected**.
+
+See the [Dot connection guide](docs/dot-connection-guide.md) for Platform links, API key permissions, messaging and disconnecting.
+
 ## Documentation
 
-[Development](docs/development.md) · [Platform architecture](docs/platform-architecture.md) · [Platform builds](docs/platform-builds.md) · [Accounts](docs/accounts.md) · [Client hooks](docs/client-hooks.md) · [Session data](docs/session-data.md) · [Local network](docs/local-network.md) · [Performance](docs/performance.md) · [Parity ledger](docs/parity/README.md) · [Tao patch](docs/tao-panel-patch.md) · [Third-party sources](docs/third-party.md) · [Contributing](CONTRIBUTING.md)
+[Dot connection guide](docs/dot-connection-guide.md) · [Development](docs/development.md) · [Platform architecture](docs/platform-architecture.md) · [Platform builds](docs/platform-builds.md) · [Accounts](docs/accounts.md) · [Client hooks](docs/client-hooks.md) · [Session data](docs/session-data.md) · [Local network](docs/local-network.md) · [Performance](docs/performance.md) · [Parity ledger](docs/parity/README.md) · [Tao patch](docs/tao-panel-patch.md) · [Third-party sources](docs/third-party.md) · [Contributing](CONTRIBUTING.md)
 
 ## License
 
@@ -330,27 +340,3 @@ The workspace layout, the MCP client configuration and the other commands are in
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jazzenchen/agent-hud-open&type=date&legend=top-left" />
  </picture>
 </a>
-# Dot in this fork
-
-Configure **Settings → Agents → Dot** once with a Tunnel ID, a Restricted runtime API key and an optional loopback proxy. Complete macOS and Windows builds include the required runtimes. Later, turn Enabled on to reconnect using saved settings.
-
-- [Dot连接指南 — Dot connection guide (Chinese)](docs/Dot连接指南.md): Platform links, Tunnels Read + Use only, setup steps, copyable subscription prompt, stable task names, unsubscribe and tool refresh.
-- [Dot technical notes](docs/dot-setup.md): actual delivery receipts, machine/session binding, secure storage, builds and troubleshooting.
-
-Enable the plugin and subscribe in your existing Dot after connecting the tunnel. Stopping the local connection does not delete the platform task. HUD automatically confirms verified native receiving inputs; no manual confirmation tool is required. The legacy wire ID `dot:luo` is retained for existing subscriptions and does not represent your Dot's personal name.
-
-## First connection: Platform, HUD and ChatGPT
-
-1. Open [Platform Tunnels](https://platform.openai.com/settings/organization/tunnels), select the right organization, create or select this computer's tunnel, associate the target ChatGPT workspace and copy its Tunnel ID.
-2. Open [Runtime API keys](https://platform.openai.com/settings/organization/api-keys). Create a **Restricted** key with **Tunnels Read + Use only**; leave other permissions at None. Do not grant Manage or use All or an Admin API key. The key's principal also needs the organization-level runtime permissions.
-3. Start HUD → **Settings → Agents → Dot**, enable it, enter the Tunnel ID and runtime key locally, set a loopback HTTP proxy if needed, then **Save and connect**. Wait for **Awaiting Dot subscription**.
-4. **Keep HUD running, Dot enabled and the tunnel ready.** In ChatGPT (desktop or web, where available), open **Plugins**, click **Add / ＋** at the top right, then **Add custom MCP server**.
-5. Name it **Dot-HUD-Mac** on Mac or **Dot-HUD-Win** on Windows. Under Connection select **Tunnel**, wait for the list and choose the exact tunnel configured in HUD. Paste the same ID if the UI supports it.
-6. Under Authentication choose **No authentication**. The packaged tunnel-client injects protected upstream authentication into the local listener; do not put the runtime key in the plugin form or add OAuth.
-7. Complete the platform checks, click **Add / Create as a plugin**, and install it if required. Keep HUD and your local proxy running while tools are discovered and used.
-8. Enable the plugin in your **existing Dot**. In HUD's first-connection section click **Copy prompt**, then send it to that Dot. HUD selects the Mac/Windows entry automatically; new subscriptions use `{"mailbox":"dot"}`.
-9. Reuse an existing event task. Name a new one **Dot-HUD 通信 · Mac** or **Dot-HUD 通信 · Windows**; if naming is unsupported, keep the actual name reported by Dot. Verify the five tools and **Connected** state before any optional message test.
-
-To unsubscribe, manually delete that event task in ChatGPT **Scheduled**. **Stop connection** stops only this computer and does not delete the task. Mac and Windows currently require separate tunnels and plugin entries. See the [Dot connection guide](docs/Dot连接指南.md) for the copyable prompt, states, session selection and troubleshooting.
-
-**Tool direction:** remote `Dot-HUD-*` tools are for Dot. Its `hud_reply` replies to Codex-origin events and its `hud_list_sessions` lists Codex only. Codex answers a Dot-initiated message through local `agent-hud.send_message(reply_to=received_id)`; native `list_sessions` discovers DSH partners. If an existing chat lacks the native messaging tools, refresh/restart the existing **Settings → MCP servers → agent-hud** connection and verify the tools in that same chat. Do not substitute remote Dot tools. See [tool direction and reload instructions](docs/Dot连接指南.md#10-分清-dot-插件与本机-hud不要反方向调用).
