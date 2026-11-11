@@ -9,6 +9,7 @@ import { layoutMarks, restingAgents } from "./resting-agents.ts";
 import { recentLabel, recentUsage } from "./recent-usage.ts";
 import { visibleBalances } from "./balance-rows.ts";
 import { heldUsed } from "./held-reading.ts";
+import { dotConnectionLabel } from "./dot-status.ts";
 import type { GlowEffect, GlowStyle } from "./HUDGlow";
 import type { UsageStyle } from "./usage-meter/arcs";
 import {
@@ -173,9 +174,17 @@ export function vendorsFromSnapshot(
             )
           : null,
       usage:
-        quotas.length || balance
-          ? null
-          : recentLabel(recentUsage(snapshot, key), snapshotLanguage(snapshot)),
+        key === "dot"
+          ? dotConnectionLabel(
+              snapshot.connection.dot,
+              snapshotLanguage(snapshot),
+            )
+          : quotas.length || balance
+            ? null
+            : recentLabel(
+                recentUsage(snapshot, key),
+                snapshotLanguage(snapshot),
+              ),
       quotas,
       sessions,
     };

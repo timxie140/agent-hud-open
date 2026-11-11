@@ -1,0 +1,196 @@
+name: Publish verified Dot release
+
+on:
+  push:
+    branches: ["codex/windows-dot-luo"]
+    paths: [".github/workflows/publish-dot-release.yml"]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-dot-0.6.1-dot.1
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      RELEASE_COMMIT: 94469fdbc95459585e31d4beeddd1451d8d19818
+      RELEASE_TAG: v0.6.1-dot.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_COMMIT }}
+          persist-credentials: false
+      - name: Test offline release validation
+        run: python3 -B -m unittest discover -s src/tooling -p test_prepare_dot_release.py -v
+      - name: Wait for both native builds and download exact artifacts
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const crypto = require('node:crypto');
+            const {owner, repo} = context.repo;
+            const target = process.env.RELEASE_COMMIT;
+            if (!/^[0-9a-f]{40}$/.test(target)) throw Error('Invalid build revision');
+            const required = [
+              {name: 'Windows desktop', path: '.github/workflows/windows.yml', artifact: 'agent-hud-open-windows-x86_64-unsigned', local: 'windows.zip'},
+              {name: 'macOS desktop with Dot', path: '.github/workflows/macos-dot.yml', artifact: 'agent-hud-dot-macos-unsigned', local: 'macos.zip'},
+            ];
+            const deadline = Date.now() + 100 * 60 * 1000;
+            let ready;
+            while (Date.now() < deadline) {
+              const {data} = await github.rest.actions.listWorkflowRunsForRepo({owner, repo, head_sha: target, branch: 'codex/windows-dot-luo', event: 'push', per_page: 50});
+              ready = required.map(spec => ({spec, run: data.workflow_runs.find(run => run.head_sha === target && run.name === spec.name && run.path === spec.path)}));
+              for (const {spec, run} of ready) {
+                if (run?.status === 'completed' && run.conclusion !== 'success') {
+                  throw Error(spec.name + ' did not pass: ' + run.html_url);
+                }
+              }
+              if (ready.every(item => item.run?.status === 'completed' && item.run.conclusion === 'success')) break;
+              ready = undefined;
+              await new Promise(resolve => setTimeout(resolve, 30000));
+            }
+            if (!ready) throw Error('Native build verification deadline exceeded');
+            fs.mkdirSync('release-downloads');
+            for (const {spec, run} of ready) {
+              const {data} = await github.rest.actions.listWorkflowRunArtifacts({owner, repo, run_id: run.id, per_page: 100});
+              const matches = data.artifacts.filter(item => item.name === spec.artifact && !item.expired);
+              if (matches.length !== 1) throw Error('Expected one verified artifact for ' + spec.name);
+              const artifact = matches[0];
+              if (artifact.workflow_run?.head_sha && artifact.workflow_run.head_sha !== target) throw Error('Artifact revision mismatch');
+              const download = await github.rest.actions.downloadArtifact({owner, repo, artifact_id: artifact.id, archive_format: 'zip'});
+              const bytes = Buffer.from(download.data);
+              const digest = 'sha256:' + crypto.createHash('sha256').update(bytes).digest('hex');
+              if (artifact.digest && digest !== artifact.digest) throw Error('Artifact transport checksum mismatch');
+              fs.writeFileSync('release-downloads/' + spec.local, bytes);
+              core.info(spec.name + ' verified: ' + run.html_url);
+            }
+      - name: Prepare verified release files and complete source
+        run: |
+          python3 -B src/tooling/prepare-dot-release.py --windows release-downloads/windows.zip --macos release-downloads/macos.zip --revision "$RELEASE_COMMIT" --out release-assets
+          git archive --format=zip --prefix=agent-hud-dot-0.6.1-dot.1/ --output=release-assets/agent-hud-dot-0.6.1-dot.1-source.zip "$RELEASE_COMMIT"
+          python3 - <<'PY'
+          import hashlib,re
+          from pathlib import Path
+          folder=Path('release-assets')
+          for path in list(folder.iterdir()):
+              name=re.sub(r'[^A-Za-z0-9._-]', '-', path.name).replace('_aarch64.dmg', '_arm64.dmg')
+              if name != path.name:
+                  target=folder/name
+                  if target.exists(): raise RuntimeError('Release filename collision')
+                  path.rename(target)
+          paths=sorted(p for p in folder.iterdir() if p.name!='SHA256SUMS')
+          (folder/'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n' for p in paths),encoding='utf-8')
+          PY
+      - name: Upload complete assets and publish prerelease
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const crypto = require('node:crypto');
+            const {owner, repo} = context.repo;
+            const target = process.env.RELEASE_COMMIT;
+            const tag = process.env.RELEASE_TAG;
+            try {
+              let {data: ref} = await github.rest.git.getRef({owner, repo, ref: 'tags/' + tag});
+              if (ref.object.type === 'tag') ref = {object: (await github.rest.git.getTag({owner, repo, tag_sha: ref.object.sha})).data.object};
+              if (ref.object.type !== 'commit' || ref.object.sha !== target) throw Error('Existing tag targets another revision');
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            const body = [
+              'Adds the native Dot/Luo client, direct HUD routing, recipient-confirmed delivery receipts, and Settings → Agents → Dot.',
+              '',
+              'Windows x86_64 and macOS Apple Silicon (arm64). Complete standalone runtime and independent tunnel are included; no Bridge dependency.',
+              '',
+              '**Unsigned prerelease.** CI and packaged-runtime checks passed. Real GUI/Keychain authorization and Luo end-to-end validation have not been claimed; perform them through normal platform permissions.',
+              '',
+              'Revision: `' + target + '`',
+              '[Chinese setup and receipt tutorial](https://github.com/' + owner + '/' + repo + '/blob/' + target + '/docs/dot-setup.md)',
+              '',
+              'Keep a single active client on a tunnel main channel. Stop the previous temporary Dot listener/tunnel before enabling the new HUD connection. Never paste credentials into chats or logs.',
+            ].join('\n');
+            const matches = (await github.paginate(github.rest.repos.listReleases, {owner, repo, per_page: 100})).filter(item => item.tag_name === tag);
+            if (matches.length > 1) throw Error('Multiple releases use the target tag');
+            let release = matches[0];
+            if (release && release.target_commitish !== target) throw Error('Existing release targets another revision');
+            if (!release) release = (await github.rest.repos.createRelease({owner, repo, tag_name: tag, target_commitish: target, name: 'Agent HUD Dot 0.6.1-dot.1 (unsigned)', body, draft: true, prerelease: true})).data;
+            // This migration changes only an asset label and its checksum index.
+            if (!release.draft) {
+              const oldName = 'Agent-HUD_0.6.1-dot.1_aarch64.dmg';
+              const newName = 'Agent-HUD_0.6.1-dot.1_arm64.dmg';
+              const pendingName = 'SHA256SUMS.arm64.pending';
+              const remote = (await github.rest.repos.listReleaseAssets({owner, repo, release_id: release.id, per_page: 100})).data;
+              const oldMac = remote.find(asset => asset.name === oldName);
+              const newMac = remote.find(asset => asset.name === newName);
+              if ((!oldMac && !newMac) || (oldMac && newMac)) throw Error('Ambiguous macOS asset naming');
+              const mac = oldMac ?? newMac;
+              const macBytes = fs.readFileSync('release-assets/' + newName);
+              const digestOf = bytes => 'sha256:' + crypto.createHash('sha256').update(bytes).digest('hex');
+              if (mac.size !== macBytes.length || mac.digest !== digestOf(macBytes)) throw Error('macOS bytes differ; naming migration refused');
+              const wanted = fs.readFileSync('release-assets/SHA256SUMS');
+              const prior = Buffer.from(wanted.toString('utf8').replace(newName, oldName));
+              if (prior.equals(wanted)) throw Error('Missing expected macOS checksum entry');
+              const checksum = remote.find(asset => asset.name === 'SHA256SUMS');
+              let pending = remote.find(asset => asset.name === pendingName);
+              const alreadyCurrent = checksum?.digest === digestOf(wanted) && checksum.size === wanted.length;
+              if (!alreadyCurrent) {
+                if (checksum && (checksum.digest !== digestOf(prior) || checksum.size !== prior.length)) throw Error('Unexpected existing checksum file');
+                fs.writeFileSync('release-downloads/SHA256SUMS.before-arm64', prior);
+                if (pending) {
+                  if (pending.digest !== digestOf(wanted) || pending.size !== wanted.length || pending.state !== 'uploaded') throw Error('Unexpected pending checksum asset');
+                } else {
+                  pending = (await github.rest.repos.uploadReleaseAsset({owner, repo, release_id: release.id, name: pendingName, headers: {'content-type': 'application/octet-stream', 'content-length': wanted.length}, data: wanted})).data;
+                  if (pending.digest !== digestOf(wanted) || pending.size !== wanted.length || pending.state !== 'uploaded') throw Error('Replacement checksum upload verification failed');
+                }
+                if (oldMac) await github.rest.repos.updateReleaseAsset({owner, repo, asset_id: oldMac.id, name: newName});
+                if (checksum) await github.rest.repos.deleteReleaseAsset({owner, repo, asset_id: checksum.id});
+                await github.rest.repos.updateReleaseAsset({owner, repo, asset_id: pending.id, name: 'SHA256SUMS'});
+              } else {
+                if (oldMac) await github.rest.repos.updateReleaseAsset({owner, repo, asset_id: oldMac.id, name: newName});
+                if (pending) {
+                  if (pending.digest !== digestOf(wanted)) throw Error('Unexpected pending checksum asset');
+                  await github.rest.repos.deleteReleaseAsset({owner, repo, asset_id: pending.id});
+                }
+              }
+            }
+            const assets = (await github.rest.repos.listReleaseAssets({owner, repo, release_id: release.id, per_page: 100})).data;
+            const names = fs.readdirSync('release-assets').sort();
+            const expectedAssets = new Map();
+            for (const name of names) {
+              const bytes = fs.readFileSync('release-assets/' + name);
+              const digest = 'sha256:' + crypto.createHash('sha256').update(bytes).digest('hex');
+              expectedAssets.set(name, {size: bytes.length, digest});
+              const existing = assets.find(asset => asset.name === name);
+              if (existing) {
+                let actual = existing.digest;
+                if (!actual) {
+                  const download = await github.rest.repos.getReleaseAsset({owner, repo, asset_id: existing.id, headers: {accept: 'application/octet-stream'}});
+                  actual = 'sha256:' + crypto.createHash('sha256').update(Buffer.from(download.data)).digest('hex');
+                }
+                if (existing.size !== bytes.length || actual !== digest) throw Error('Existing release asset differs: ' + name);
+              } else {
+                if (!release.draft) throw Error('Refusing to change an already-published incomplete release');
+                await github.rest.repos.uploadReleaseAsset({owner, repo, release_id: release.id, name, headers: {'content-type': 'application/octet-stream', 'content-length': bytes.length}, data: bytes});
+              }
+            }
+            const complete = (await github.rest.repos.listReleaseAssets({owner, repo, release_id: release.id, per_page: 100})).data;
+            if (complete.length !== names.length) throw Error('Release asset count mismatch');
+            for (const asset of complete) {
+              const expected = expectedAssets.get(asset.name);
+              if (!expected || asset.state !== 'uploaded' || asset.size !== expected.size || (asset.digest && asset.digest !== expected.digest)) throw Error('Release asset verification failed');
+            }
+            if (release.draft) release = (await github.rest.repos.updateRelease({owner, repo, release_id: release.id, body, draft: false, prerelease: true})).data;
+            core.info('Published verified release: ' + release.html_url);
+            await core.summary.addLink('Download complete Dot release', release.html_url).write();
+      - name: Retain a verified mirror for connector download
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-hud-dot-complete-release
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 14

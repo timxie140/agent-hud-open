@@ -330,3 +330,15 @@ The workspace layout, the MCP client configuration and the other commands are in
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jazzenchen/agent-hud-open&type=date&legend=top-left" />
  </picture>
 </a>
+# Dot / Luo in this fork
+
+Settings → Agents includes **Dot**, with an enable switch, tunnel ID, locally
+entered runtime API key, optional loopback proxy, and connection/receipt status.
+Enabled connections start with HUD on macOS and Windows without Codex Bridge.
+Codex uses the existing HUD messaging tools with `dot:luo`; the new
+`confirm_delivery` reports actual receipt back to Luo without an ACK loop.
+
+See [Dot setup, subscription instructions and delivery receipts](docs/dot-setup.md)
+before connecting an existing Dot. The guide covers the required Luo plugin
+subscription, persistent registration, upgrade, secure storage and troubleshooting.
+

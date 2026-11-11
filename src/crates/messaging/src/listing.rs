@@ -36,6 +36,18 @@ impl Messaging {
                 })
             })
             .collect::<Vec<_>>();
+        let dot = if self.dot.enabled() {
+            self.dot
+                .call("status", json!({}))
+                .unwrap_or_else(|_| json!({"enabled":true,"ready":false,"subscribed":false}))
+        } else {
+            json!({"enabled":false})
+        };
+        if dot["enabled"] == true {
+            rows.push(json!({"id":agent_hud_platform::dot::SESSION,"client":"dot","title":"Luo",
+                "project":null,"state":"idle","reachable":dot["ready"] == true && dot["subscribed"] == true,
+                "reason":dot["notice"],"self":false,"updatedAt":null}));
+        }
         rows.sort_by(|a, b| b["updatedAt"].as_str().cmp(&a["updatedAt"].as_str()));
         let starts = self
             .starts

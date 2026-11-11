@@ -9,6 +9,9 @@ impl Messaging {
             return Ok(json!({"id":id,"state":"unknown","reason":words::unknown_message(zh)}));
         };
         let mut message = message;
+        if message.to.client == "dot" {
+            return self.get_dot(&message);
+        }
         let mut state = message.state.clone();
         let mut reason = message.reason.clone();
         if message.kind == Kind::Send {

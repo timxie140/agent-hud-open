@@ -3,6 +3,33 @@
 use super::*;
 use serde_json::json;
 
+/// Keep native HUD window measurements aligned with model.ts's Dot label.
+pub(super) fn dot_connection_label(snapshot: &Value) -> &'static str {
+    let status = &snapshot["connection"]["dot"];
+    let labels = if snapshot["language"] == "zh" {
+        ["已关闭", "正在启动", "连接隧道", "等待订阅", "已连接 Luo"]
+    } else {
+        [
+            "Off",
+            "Starting",
+            "Connecting",
+            "Awaiting subscription",
+            "Connected to Luo",
+        ]
+    };
+    labels[if status["enabled"] != true {
+        0
+    } else if status["running"] != true {
+        1
+    } else if status["ready"] != true {
+        2
+    } else if status["subscribed"] != true {
+        3
+    } else {
+        4
+    }]
+}
+
 /// A display percentage; stored readings and quota severity always use consumed usage.
 pub fn quota_percent(used: f64, remaining: bool) -> f64 {
     let used = used.clamp(0.0, 100.0);

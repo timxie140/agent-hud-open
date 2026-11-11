@@ -10,6 +10,9 @@
 //! The words are kept only while they are delivered: the journal keeps who sent
 //! what to whom, a fingerprint of the words and where the answer will be, and
 //! an answer is read again from the other session's transcript each time.
+mod dot_confirm;
+mod dot_port;
+mod dot_routes;
 mod flights;
 mod get;
 mod journal;
@@ -100,6 +103,8 @@ pub type Follow = Arc<dyn Fn(StartReceipt) + Send + Sync>;
 pub type Fly = Arc<dyn Fn(Flight) + Send + Sync>;
 
 pub struct Messaging {
+    dot: dot_port::DotPort,
+    receipt_cursor: usize,
     /// The user's choices, as the snapshot of the call or look being
     /// answered says.
     preferences: Preferences,
@@ -123,6 +128,8 @@ impl Messaging {
         fly: Fly,
     ) -> Self {
         Self {
+            dot: dot_port::DotPort::default(),
+            receipt_cursor: 0,
             preferences: Preferences::default(),
             journal: Journal::load(directory.join("messaging/messages.json")),
             places,
@@ -170,6 +177,14 @@ impl Messaging {
                 let id = arguments["id"].as_str().ok_or("id is required")?;
                 self.get(id, host, now)
             }
+            "confirm_delivery" => {
+                let caller = caller.ok_or("Actual receiving client identity is required")?;
+                let id = arguments["id"].as_str().ok_or("id is required")?;
+                let challenge = arguments["delivery_challenge"]
+                    .as_str()
+                    .ok_or("delivery_challenge is required")?;
+                self.confirm_dot(&caller, id, challenge)
+            }
             _ => Err("Unknown local application tool".into()),
         }
     }
@@ -180,10 +195,14 @@ impl Messaging {
     /// Whether any message still waits for something maintenance does: its
     /// delivery to be captured, or its answer to be thrown back.
     pub fn waiting(&self) -> bool {
-        self.journal.pending()
+        self.journal.pending() || (self.preferences.enabled && self.dot.enabled())
     }
     pub fn maintain(&mut self, host: &Host<'_>, now: i64) {
         self.preferences = Preferences::read(&host.snapshot["settings"]);
+        if self.preferences.enabled {
+            self.clients.update_targets(sessions_targets(host.snapshot));
+        }
+        self.maintain_dot(host, now);
         let clients = self.clients.clone();
         let mut changed = self.journal.prune(now);
         changed |= self.fly_answers(host, now);

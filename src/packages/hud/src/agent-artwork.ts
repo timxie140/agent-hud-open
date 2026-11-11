@@ -106,6 +106,7 @@ export function agentArtworkKey(source: string): string {
 /** Vendors with no mark yet, shown with the generic icon: their own names. */
 const unmarked: Readonly<Record<string, string>> = {
   droid: "Factory Droid",
+  dot: "Dot",
 };
 export function agentVendorName(source: string): string {
   const key = agentArtworkKey(source);

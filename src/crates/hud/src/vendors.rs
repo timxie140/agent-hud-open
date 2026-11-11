@@ -153,9 +153,13 @@ pub fn vendors<'a>(snapshot: &'a Value, mode: &str, now_ms: i64) -> Vec<Vendor<'
                         money_amount(&b["amount"], b["currency"].as_str().unwrap_or("USD"))
                     })
                 }),
-                usage: (quotas.is_empty() && balance.is_none())
-                    .then(|| recent_label(snapshot, &key))
-                    .flatten(),
+                usage: if key == "dot" {
+                    Some(format::dot_connection_label(snapshot).into())
+                } else {
+                    (quotas.is_empty() && balance.is_none())
+                        .then(|| recent_label(snapshot, &key))
+                        .flatten()
+                },
                 key,
                 quotas,
                 sessions,
@@ -220,6 +224,7 @@ pub fn configured<'a>(
 fn vendor_name(source: &str) -> String {
     let name = match mark(source).as_str() {
         "claude" => "Claude",
+        "dot" => "Dot",
         "openai" => "OpenAI",
         "antigravity" => "Antigravity",
         "deepseek" => "DeepSeek",

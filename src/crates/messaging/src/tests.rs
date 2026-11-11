@@ -3,6 +3,8 @@
 //! whatever is queued, Agent HUD's Claude Code and DeepSeek Harness plugins
 //! as their folders, and a Claude Code that runs no process for starts.
 use super::*;
+#[path = "dot_tests.rs"]
+mod dot_tests;
 use agent_hud_core::conversation_feed::{Batch, Fact, Item, Kind as FeedKind, Role};
 use agent_hud_platform::delivery::{
     fixtures::{StartFixture, SESSION as STARTED},
@@ -41,8 +43,33 @@ fn compressed(session: &str) -> bool {
 
 /// A Codex that queues what it is given and remembers it.
 #[derive(Default)]
-struct Codex(Mutex<Vec<SendRequest>>);
+struct Codex(Mutex<Vec<SendRequest>>, AtomicBool);
 impl CodexTransport for Codex {
+    fn received_input(
+        &self,
+        _data: &Path,
+        target: &SessionTarget,
+        request: &str,
+        fingerprint: &str,
+        _timeout: Duration,
+    ) -> delivery::Result<Option<delivery::ReceivedInput>> {
+        if !self.1.load(AtomicOrdering::SeqCst) {
+            return Ok(None);
+        }
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.request_id == request && transcript::fingerprint(&r.text) == fingerprint)
+            .map(|r| {
+                delivery::received_input_fixture(
+                    target.thread_id.as_deref().unwrap(),
+                    "received-turn",
+                    &r.text,
+                )
+            }))
+    }
     fn deliver(
         &self,
         _data: &Path,
@@ -576,7 +603,7 @@ fn an_uncertain_antigravity_send_is_not_reported_as_refused() {
 }
 
 #[test]
-fn the_group_lists_its_four_tools_only_while_it_is_on() {
+fn the_group_lists_its_tools_and_delivery_confirmation_only_while_it_is_on() {
     assert_eq!(Messaging::tools(false), json!({"tools":[]}));
     let names = Messaging::tools(true)["tools"]
         .as_array()
@@ -590,6 +617,7 @@ fn the_group_lists_its_four_tools_only_while_it_is_on() {
             "list_sessions",
             "send_message",
             "start_session",
+            "confirm_delivery",
             "get_message"
         ]
     );

@@ -26,6 +26,10 @@ impl Backend {
         owner.project_snapshot(&mut value);
         self.projected = Some(owner.revision());
         app.state::<system::System>().project(&mut value);
+        crate::dot::project(
+            &mut value,
+            self.snapshot.as_deref().map(|v| &v["connection"]["dot"]),
+        );
         if let Some(tools) = &self.tools {
             value["connection"]["localTools"] =
                 tools.configure(tools::channel_wanted(&value["settings"]));

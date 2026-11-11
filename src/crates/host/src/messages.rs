@@ -32,6 +32,7 @@ struct Own {
 }
 
 pub(crate) struct AgentMessages {
+    app: tauri::AppHandle,
     messaging: Mutex<Messaging>,
     conversations: Option<Arc<dyn Turns>>,
     own: Option<Arc<Own>>,
@@ -69,6 +70,7 @@ impl AgentMessages {
             Arc::new(move |flight| activity::publish(&flights, "hud:flight", &flight)),
         );
         let owner = Arc::new(Self {
+            app: app.clone(),
             messaging: Mutex::new(messaging),
             conversations: delivery.conversations,
             own,
@@ -82,7 +84,10 @@ impl AgentMessages {
             .spawn(move || {
                 while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(LOOK) {
                     match looker.upgrade() {
-                        Some(owner) => owner.look(),
+                        Some(owner) => {
+                            owner.look();
+                            crate::dot::refresh(&owner.app);
+                        }
                         None => break,
                     }
                 }

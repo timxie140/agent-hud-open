@@ -12,6 +12,7 @@ pub mod clients;
 mod data_folder;
 pub mod deepseek_plugin;
 pub mod delivery;
+pub mod dot;
 pub mod hooks;
 pub mod hud_tools;
 pub mod json_text;

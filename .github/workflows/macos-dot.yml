@@ -1,0 +1,71 @@
+name: macOS desktop with Dot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/windows-dot-luo']
+    paths-ignore:
+      - '.github/workflows/publish-dot-release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-dot-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: python3 -m pip install -r src/apps/dot/requirements-build.txt
+      - name: Test Dot transport and delivery receipts
+        working-directory: src/apps/dot
+        run: python3 -B -m unittest discover -v
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: pnpm run typecheck
+      - run: pnpm run test:mcp
+      - run: mkdir -p src/apps/desktop/src-tauri/resources
+      - name: Test native macOS adapters
+        env:
+          # Preserve deadline assertions while limiting concurrent fixture startups.
+          RUST_TEST_THREADS: '2'
+        run: cargo test --workspace --locked --no-fail-fast
+      - name: Build macOS application and disk image
+        run: pnpm run build:macos -- --bundle
+      - name: Smoke check runtime inside the complete macOS app
+        run: |
+          smoke_data="$(mktemp -d)"
+          printf '%s' '{"action":"status","arguments":{}}' | AGENTHUD_DOT_DATA="$smoke_data" "target/release/bundle/macos/Agent HUD.app/Contents/Resources/dot/agent-hud-dot" --control-stdin > "$smoke_data/status.json"
+          python3 -c 'import json,sys; value=json.load(open(sys.argv[1]))["result"]; assert value["enabled"] is False and value["running"] is False' "$smoke_data/status.json"
+      - name: Record provenance and archive complete app
+        run: |
+          mkdir -p dot-release
+          ditto -c -k --keepParent "target/release/bundle/macos/Agent HUD.app" "dot-release/Agent-HUD-macOS-$(uname -m).zip"
+          cp target/release/bundle/dmg/*.dmg dot-release/
+          cp docs/dot-setup.md dot-release/
+          python3 -c 'import json,os,platform; from pathlib import Path; Path("dot-release/provenance.json").write_text(json.dumps({"revision":os.environ["GITHUB_SHA"],"platform":"macOS","architecture":platform.machine(),"signed":False,"run":os.environ["GITHUB_SERVER_URL"]+"/"+os.environ["GITHUB_REPOSITORY"]+"/actions/runs/"+os.environ["GITHUB_RUN_ID"]},indent=2))'
+          shasum -a 256 dot-release/*.zip dot-release/*.dmg > dot-release/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-hud-dot-macos-unsigned
+          path: dot-release/
+          if-no-files-found: error
+          retention-days: 14

@@ -23,6 +23,7 @@ pub use agent_hud_platform::claude_plugin;
 pub use agent_hud_platform::client_executable;
 pub use agent_hud_platform::deepseek_plugin;
 pub use agent_hud_platform::delivery;
+pub use agent_hud_platform::dot;
 pub use agent_hud_platform::hooks;
 pub use agent_hud_platform::hud_tools;
 pub use agent_hud_platform::instance;

@@ -106,6 +106,14 @@ export interface Snapshot {
     message: string | null;
     platformCapabilities?: PlatformCapabilities;
     clientHooks?: ClientHooksStatus;
+    /** Public connection flags only; never tunnel configuration or credentials. */
+    dot?: {
+      supported: boolean;
+      enabled: boolean;
+      running: boolean;
+      ready: boolean;
+      subscribed: boolean;
+    };
     system?: {
       platform: string;
       launchAtLogin: {

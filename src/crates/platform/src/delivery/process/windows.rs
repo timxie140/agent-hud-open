@@ -136,8 +136,9 @@ mod tests {
             let _ = std::io::BufReader::new(stdout).read_line(&mut line);
             let _ = sender.send(line);
         });
+        // PowerShell startup is fixture setup, separate from the job shutdown deadline.
         let pid: u32 = receiver
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(Duration::from_secs(30))
             .unwrap()
             .trim()
             .parse()
@@ -174,10 +175,17 @@ mod tests {
             timeout,
         };
         let output = NativeProcessRunner
-            .run(&plan(
-                "[Console]::Out.Write('out'); [Console]::Error.Write('err')",
-                Duration::from_secs(10),
-            ))
+            .run(&CommandPlan {
+                executable: PathBuf::from(std::env::var_os("ComSpec").unwrap()),
+                arguments: vec![
+                    "/d".into(),
+                    "/c".into(),
+                    "<nul set /p =out&<nul 1>&2 set /p =err&exit /b 0".into(),
+                ],
+                directory: None,
+                environment: BTreeMap::new(),
+                timeout: Duration::from_secs(10),
+            })
             .unwrap();
         assert_eq!(output.stdout, b"out");
         assert_eq!(output.stderr, b"err");

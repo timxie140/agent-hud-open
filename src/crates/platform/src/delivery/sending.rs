@@ -138,6 +138,45 @@ impl LocalClients {
             .map(|attempt| self.refresh_receipt(attempt, &file, SystemTime::now()))
             .transpose()
     }
+    /// Read only the real owner of a previously submitted Codex input. An
+    /// unavailable owner leaves receipt unverified; it never starts a client.
+    pub fn received_input(
+        &self,
+        session: &str,
+        request: &str,
+        fingerprint: &str,
+    ) -> Result<Option<ReceivedInput>> {
+        let Some(receipt) = self.receipt(Provider::Codex, session, request)? else {
+            return Ok(None);
+        };
+        if matches!(
+            receipt.state,
+            DeliveryState::Refused | DeliveryState::Failed | DeliveryState::Expired
+        ) {
+            return Ok(None);
+        }
+        let target = self
+            .targets
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|target| {
+                target.provider == Provider::Codex
+                    && target.session_id == session
+                    && target.thread_id == receipt.thread_id
+            })
+            .cloned();
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        self.codex.received_input(
+            &self.paths.codex_data,
+            &target,
+            request,
+            fingerprint,
+            self.timeout.min(Duration::from_millis(500)),
+        )
+    }
     pub fn cancel(
         &self,
         provider: Provider,
