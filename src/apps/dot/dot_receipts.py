@@ -7,6 +7,8 @@ import uuid
 
 
 def migrate(db):
+    from dot_sessions import migrate as migrate_sessions
+    migrate_sessions(db)
     columns = {row[1] for row in db.execute('PRAGMA table_info(messages)')}
     for name, declaration in [('recipient_confirmed', 'REAL'),
                               ('receipt_state', 'TEXT'), ('receipt_event_id', 'TEXT'),
@@ -18,7 +20,7 @@ def migrate(db):
 def pending(adapter):
     with adapter.db() as db:
         rows = db.execute("SELECT * FROM messages WHERE reply_id IS NOT NULL AND json_extract(native_receipt,'$.state')='pending_hud' ORDER BY created LIMIT 8").fetchall()
-    return [{'id': row['id'], 'replyId': row['reply_id'], 'source': row['source'],
+    return [{'id': row['id'], 'replyId': row['reply_id'], 'source': row['source'], 'origin': row['origin'],
              'text': row['reply_text']} for row in rows
             if row['native_receipt'] and json.loads(row['native_receipt']).get('state') == 'pending_hud']
 
@@ -36,7 +38,7 @@ def claim(adapter, message_id):
                    (canonical({'state': 'reserved', 'actualReceiptConfirmed': False}),
                     hashlib.sha256(challenge.encode()).hexdigest(), message_id))
     return {'claimed': True, 'id': row['id'], 'replyId': row['reply_id'],
-            'source': row['source'], 'text': row['reply_text'], 'deliveryChallenge': challenge}
+            'source': row['source'], 'origin': row['origin'], 'text': row['reply_text'], 'deliveryChallenge': challenge}
 
 
 def complete(adapter, message_id, native):
@@ -84,7 +86,7 @@ def confirm(adapter, reply_id, source, challenge):
     event = {'eventId': event_id, 'name': EVENT, 'timestamp': timestamp(adapter.clock()),
              'cursor': None, 'data': {'kind': 'delivery_receipt', 'mailbox': MAILBOX,
              'message_id': row['id'], 'source': source,
-             'text': 'Recipient confirmed actual delivery of reply ' + reply_id}}
+             'text': 'Recipient confirmed actual delivery of ' + ('message ' if row['origin'] == 'dot' else 'reply ') + reply_id}}
     body = canonical(event).encode()
     state = 'uncertain'
     try:
@@ -100,6 +102,9 @@ def confirm(adapter, reply_id, source, challenge):
 
 def internal(adapter, action, params):
     from hud_dot import Rejected
+    if action == 'sessions':
+        from dot_sessions import publish
+        return publish(adapter, params)
     if action == 'pending':
         return {'messages': pending(adapter)}
     if action == 'claim':

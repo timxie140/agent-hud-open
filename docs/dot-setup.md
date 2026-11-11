@@ -123,7 +123,40 @@ hud_get_delivery_status 读取持久的确认记录。丢失/不确定的通知�
 若个人 HUD 布局限定了智能体列表，需在布局中选入 Dot；不会覆盖已有显示偏好。
 Dot 没有用量配额，不显示虚构的 token、余额或额度。
 
-## 5. 故障排查与运行数据
+## 5. 从 Dot 主动选择现有 Codex 聊天
+
+在目标机器对应的 MCP 入口调用 `hud_list_sessions()`。返回的 `host` 包含
+`label`（Mac / Windows）、`platform` 和当前 HUD 的固定实例 `id`；
+`sessions` 只包含本机 HUD 当前列出的现有 Codex 主聊天，提供标题、UUID 和 `codex://threads/<UUID>`。
+列表不包含项目路径或凭据，消息权限关闭或列表过期时拒绝选择目标。
+
+用户可把聊天链接发给 Luo，例如 `[工作聊天](codex://threads/<UUID>)`。
+Luo 应先从正确机器的入口取列表，核对 `host`，再按 URL 中的 UUID 精确匹配；
+未列出的 ID 不能用于创建、恢复或替代一个聊天。主动发送示例：
+若目标未列出，先由用户在目标机器正常打开该聊天，待 HUD 识别后重新取列表。
+
+```json
+hud_send_message({
+  "host_id": "取自该入口返回的 host.id",
+  "session_id": "取自列表的 UUID 或 codex://threads/<UUID>",
+  "text": "消息内容",
+  "request_id": "luo-task-20261111-001"
+})
+```
+
+每条意图使用一个新的稳定 `request_id`。相同 request_id、目标和正文的重复调用只读取原回执，
+包括重启、拒绝和不确定结果之后；不得换 request_id 来自动重发。机器实例 ID 不匹配时拒绝，
+所以 Windows 与 Mac 即便有相同聊天 UUID，也不能跨入口投递。
+
+主动消息及 `hud_reply` 均使用自动策略：可验证的 Codex Desktop owner 正在运行时执行原生 steer；
+空闲或确认没有 Desktop owner 时进入原生队列。不确定或拒绝的 steer 不会改走队列重发。
+队列不会创建替代聊天。其他原生客户端不在此功能范围内。
+
+`hud_send_message` 返回 `id` / `deliveryId` 和 `transportState`。
+可用同入口 `hud_get_delivery_status({"id":"返回的 id"})` 只读跟踪；
+实际输入被验证后自动生成 `delivery_receipt`，Luo 仅记录，不再 ACK 或回复回执。
+
+## 6. 故障排查与运行数据
 
 - **等待订阅**：核插件启用、事件扫描及 workspace 的事件任务权限，保留平台原始错误。
 - **端口占用**：结束用户启动的旧 Dot 临时进程，勿结束不明进程或启动第二个相同隧道。

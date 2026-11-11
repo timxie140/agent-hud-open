@@ -45,6 +45,9 @@ impl AntigravityTransport for NativeAntigravityTransport {
         }
         let message_id = format!("agent-hud:{}", request.request_id);
         match request.operation {
+            Operation::SteerOrEnqueue => {
+                Err(Failure::Unsupported("Codex-only delivery policy".into()))
+            }
             Operation::Interrupt => {
                 transport::interrupt(cascade_id)?;
                 Ok(Receipt {
@@ -73,7 +76,7 @@ impl AntigravityTransport for NativeAntigravityTransport {
                         "MESSAGE_DELIVERY_STRATEGY_UNSPECIFIED",
                         DeliveryState::Started,
                     ),
-                    Operation::Interrupt => unreachable!(),
+                    Operation::Interrupt | Operation::SteerOrEnqueue => unreachable!(),
                 };
                 transport::send(cascade_id, &request.text, strategy)?;
                 Ok(Receipt {

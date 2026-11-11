@@ -142,6 +142,9 @@ pub enum Operation {
     Automatic,
     Start,
     Steer,
+    /// Dot's automatic policy: steer an active Desktop owner, otherwise queue.
+    #[serde(rename = "steer-or-enqueue")]
+    SteerOrEnqueue,
     Enqueue,
     Interrupt,
 }

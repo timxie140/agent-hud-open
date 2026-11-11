@@ -24,10 +24,16 @@ impl Messaging {
             {
                 continue;
             }
-            let Some(parent) = message.reply_to.as_deref() else {
-                continue;
+            let identifies = match message.reply_to.as_deref() {
+                Some(parent) => identifies_reply(input.text(), parent, &message.id),
+                None => {
+                    input.text().lines().next()
+                        == Some(
+                            format!("[Agent HUD · Dot Luo; message_id={}]", message.id).as_str(),
+                        )
+                }
             };
-            if !identifies_reply(input.text(), parent, &message.id) {
+            if !identifies {
                 continue;
             }
             let Some(challenge) = receipt_challenge(input.text(), &message.id) else {

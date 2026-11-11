@@ -83,7 +83,22 @@ pub(super) fn deliver(
     if request.operation == Operation::Interrupt {
         return Err(Failure::Unsupported("The original Desktop adapter exposes no verified interrupt operation; CLI fallback is forbidden while Desktop owns the thread".into()));
     }
-    let selected = if request.operation == Operation::Automatic {
+    let mut observed_turn = None;
+    let selected = if request.operation == Operation::SteerOrEnqueue {
+        let state = desktop_snapshot(&mut connection, &client, &owner, thread)?;
+        let current = super::current_desktop_turn(&state)?;
+        let Some((turn, status)) = current else {
+            return Ok(None);
+        };
+        if matches!(status.as_str(), "completed" | "failed" | "interrupted") {
+            return Ok(None);
+        }
+        if status != "inProgress" {
+            return Err(Failure::Protocol("Desktop active turn status".into()));
+        }
+        observed_turn = Some(turn);
+        Operation::Steer
+    } else if request.operation == Operation::Automatic {
         let state = desktop_snapshot(&mut connection, &client, &owner, thread)?;
         if super::current_desktop_turn(&state)?.is_some_and(|(_, status)| status == "inProgress") {
             Operation::Steer
@@ -154,6 +169,12 @@ pub(super) fn deliver(
     .filter(|v| !v.is_empty())
     .ok_or(Failure::AcceptanceUncertain)?;
     if request.operation == Operation::Steer && request.expected_turn_id.as_deref() != Some(turn) {
+        return Err(Failure::AcceptanceUncertain);
+    }
+    if observed_turn
+        .as_deref()
+        .is_some_and(|expected| expected != turn)
+    {
         return Err(Failure::AcceptanceUncertain);
     }
     Ok(Some(base_receipt(

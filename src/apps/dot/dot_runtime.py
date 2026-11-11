@@ -160,7 +160,7 @@ def control(request):
         return status(config)
     if not config.get('enabled'):
         raise hud.Rejected('Dot is disabled in HUD settings')
-    if action in {'pending', 'claim', 'complete', 'confirm'}:
+    if action in {'pending', 'claim', 'complete', 'confirm', 'sessions'}:
         return rpc(config, 'hud/internal/' + action, arguments)
     if action in {'send', 'get'}:
         source = arguments.get('source')
