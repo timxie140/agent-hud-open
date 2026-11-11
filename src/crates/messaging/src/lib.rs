@@ -11,6 +11,7 @@
 //! what to whom, a fingerprint of the words and where the answer will be, and
 //! an answer is read again from the other session's transcript each time.
 mod dot_confirm;
+mod dot_incoming;
 mod dot_port;
 mod dot_routes;
 mod flights;
@@ -195,10 +196,14 @@ impl Messaging {
     /// Whether any message still waits for something maintenance does: its
     /// delivery to be captured, or its answer to be thrown back.
     pub fn waiting(&self) -> bool {
-        self.journal.pending() || (self.preferences.enabled && self.dot.enabled())
+        self.journal.pending() || self.dot.enabled()
     }
     pub fn maintain(&mut self, host: &Host<'_>, now: i64) {
         self.preferences = Preferences::read(&host.snapshot["settings"]);
+        self.publish_dot_sessions(host);
+        if !self.preferences.enabled {
+            return;
+        }
         if self.preferences.enabled {
             self.clients.update_targets(sessions_targets(host.snapshot));
         }

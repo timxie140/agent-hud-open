@@ -1,4 +1,4 @@
-//! Agent messaging and explicit delivery confirmation, as the MCP relay lists them.
+//! Agent messaging, as the MCP relay lists it. Dot receipts are automatic.
 use super::*;
 
 impl Messaging {
@@ -17,9 +17,6 @@ impl Messaging {
             {"name":"start_session","readOnly":false,
              "description":"Start a new Claude Code, Codex or Antigravity session with text as its first message, in a folder the user already works in with that client (startFolders in list_sessions; an empty folder starts it in its own task folder). The folder defaults to your own session's project. Where the client's desktop app is installed the session lands there. Counts as one pass, like send_message. Returns a message id; get_message gives the new session's id and its first answer.",
              "inputSchema":{"type":"object","properties":{"client":{"type":"string","enum":["claude","codex","antigravity"]},"folder":{"type":"string","description":"A folder from startFolders, or empty for none. Defaults to your session's project."},"text":{"type":"string","description":"The first message, whole."}},"required":["client","text"],"additionalProperties":false}},
-            {"name":"confirm_delivery","readOnly":false,
-             "description":"Confirm a Dot reply only after it actually arrived as input in your receiving Codex thread. Pass its reply_id, not the original request ID. Reading get_message is not receipt. Sends one delivery_receipt to Luo, never another chat reply; repeated confirmation does not resend it.",
-             "inputSchema":{"type":"object","properties":{"id":{"type":"string","description":"The reply_id of the Dot reply you actually received."},"delivery_challenge":{"type":"string","description":"The challenge included only in the actual incoming input, never in get_message. Use it only for confirmation; do not echo it in chat."}},"required":["id","delivery_challenge"],"additionalProperties":false}},
             {"name":"get_message","readOnly":true,
              "description":"Read where a message you sent stands: queued, taken (the session took it and waits to go idle), started (its turn runs), done (with answer: the session's last reply in the turn your message started, whole), replied (the session answered with send_message: reply is that message's id, and its words come to your session as a new turn once you are idle), refused, expired or uncertain, with the reason. Reads only what Agent HUD already collected about the other session; it never asks or wakes it. Your own client may shorten a long result: Claude Code keeps about 50,000 characters in the conversation and saves a longer result to a file it names; Codex keeps about 10,000 tokens, the beginning and the end.",
              "inputSchema":{"type":"object","properties":{"id":{"type":"string","description":"The message id send_message or start_session returned."}},"required":["id"],"additionalProperties":false}}

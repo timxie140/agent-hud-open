@@ -32,10 +32,13 @@ export function DotDetail({
   const [tunnelId, setTunnelId] = useState(status.tunnelId ?? "");
   const [runtimeApiKey, setRuntimeApiKey] = useState("");
   const [proxy, setProxy] = useState(status.proxy ?? "");
-  const [pending, setPending] = useState(false);
+  const [pending, setPending] = useState<"save" | "start" | "stop" | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
+  const configured = Boolean(status.tunnelId && status.hasRuntimeApiKey);
   const connect = async () => {
-    setPending(true);
+    setPending("save");
     setError(null);
     try {
       await save({
@@ -48,7 +51,20 @@ export function DotDetail({
     } catch (cause) {
       setError(String(cause));
     } finally {
-      setPending(false);
+      setPending(null);
+    }
+  };
+  const setConnection = async (next: boolean) => {
+    setPending(next ? "start" : "stop");
+    setError(null);
+    try {
+      // Toggle only the saved connection; never apply unsaved form fields.
+      await save({ enabled: next });
+      setEnabled(next);
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setPending(null);
     }
   };
   const connection = !status.enabled
@@ -69,7 +85,7 @@ export function DotDetail({
           variant="ghost"
           size="icon"
           aria-label={t("Refresh Dot status", "刷新 Dot 状态")}
-          disabled={pending}
+          disabled={pending !== null}
           onClick={() => {
             void refresh().catch(() =>
               setError(t("Status unavailable", "无法读取状态")),
@@ -84,12 +100,25 @@ export function DotDetail({
         <ToggleRow
           title={t("Enabled", "启用")}
           checked={enabled}
-          change={setEnabled}
-          disabled={pending}
-          subtitle={t(
-            "Start the private connection with HUD. Changes apply when saved.",
-            "随 HUD 自动启动私有连接。表单修改在保存后生效。",
-          )}
+          change={(next) => {
+            if (configured) {
+              void setConnection(next);
+            } else {
+              setEnabled(next);
+            }
+          }}
+          disabled={pending !== null}
+          subtitle={
+            configured
+              ? t(
+                  "Connect automatically using your saved settings. Turning off stops the connection.",
+                  "开启后使用已保存配置自动连接，关闭即停止连接。",
+                )
+              : t(
+                  "Enter your connection details and save once. Future toggles connect automatically.",
+                  "首次填写连接信息并保存，后续开启即可自动连接。",
+                )
+          }
         />
         <Row title={t("Connection", "连接状态")}>
           <span role="status">{connection}</span>
@@ -122,7 +151,7 @@ export function DotDetail({
             placeholder="tunnel_…"
             spellCheck={false}
             autoComplete="off"
-            disabled={pending}
+            disabled={pending !== null}
             onChange={(event) => setTunnelId(event.target.value)}
           />
         </label>
@@ -138,7 +167,7 @@ export function DotDetail({
                 ? t("Saved; leave blank to keep", "已保存；留空保持现有密钥")
                 : t("Enter locally", "仅在本机输入")
             }
-            disabled={pending}
+            disabled={pending !== null}
             onChange={(event) => setRuntimeApiKey(event.target.value)}
           />
         </label>
@@ -149,14 +178,14 @@ export function DotDetail({
             value={proxy}
             placeholder="http://127.0.0.1:7890"
             autoComplete="off"
-            disabled={pending}
+            disabled={pending !== null}
             onChange={(event) => setProxy(event.target.value)}
           />
         </label>
         <div className="dot-actions">
           <Button
             disabled={
-              pending ||
+              pending !== null ||
               (enabled &&
                 (!tunnelId.trim() ||
                   (!runtimeApiKey && !status.hasRuntimeApiKey)))
@@ -165,10 +194,25 @@ export function DotDetail({
               void connect();
             }}
           >
-            {pending
+            {pending === "save"
               ? t("Saving…", "正在保存…")
-              : t("Save and connect", "保存并连接")}
+              : pending === "start"
+                ? t("Connecting…", "正在连接…")
+                : t("Save and connect", "保存并连接")}
           </Button>
+          {status.enabled && (
+            <Button
+              variant="outline"
+              disabled={pending !== null}
+              onClick={() => {
+                void setConnection(false);
+              }}
+            >
+              {pending === "stop"
+                ? t("Stopping…", "正在停止…")
+                : t("Stop connection", "停止连接")}
+            </Button>
+          )}
         </div>
       </Section>
       {status.notice && <Notice>{status.notice}</Notice>}

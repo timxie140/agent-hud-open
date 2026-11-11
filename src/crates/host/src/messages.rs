@@ -130,9 +130,6 @@ impl AgentMessages {
         let Ok(snapshot) = self.snapshot() else {
             return;
         };
-        if !Preferences::read(&snapshot["settings"]).enabled {
-            return;
-        }
         let mut messaging = self
             .messaging
             .lock()

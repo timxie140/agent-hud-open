@@ -66,6 +66,33 @@ fn only_canonical_accepted_steering_is_proof() {
     assert!(recorded(&value, THREAD, "m-fixture", &hash()).is_some());
 }
 
+#[test]
+fn unrelated_duplicate_turn_ids_do_not_hide_a_unique_received_input() {
+    let mut value = state();
+    let history = &mut value["turnHistory"]["history"];
+    for key in ["old-server", "old-local"] {
+        history["entitiesByKey"][key] = json!({"turnId":"old-turn","status":"completed",
+            "items":[{"type":"userMessage","content":[{"type":"text","text":"unrelated history"}]}]});
+        history["islands"][0]["entries"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"value":key}));
+    }
+    assert!(recorded(&value, THREAD, "m-fixture", &hash()).is_some());
+}
+
+#[test]
+fn duplicate_matching_canonical_inputs_remain_ambiguous() {
+    let mut value = state();
+    let history = &mut value["turnHistory"]["history"];
+    history["entitiesByKey"]["copy"] = history["entitiesByKey"]["k"].clone();
+    history["islands"][0]["entries"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"value":"copy"}));
+    assert!(recorded(&value, THREAD, "m-fixture", &hash()).is_none());
+}
+
 #[cfg(unix)]
 #[path = "observed_unix_tests.rs"]
 mod unix;

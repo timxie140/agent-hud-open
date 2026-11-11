@@ -120,7 +120,7 @@ impl AntigravityTransport for FakeAntigravity {
             state: match request.operation {
                 Operation::Interrupt => DeliveryState::Interrupted,
                 Operation::Steer => DeliveryState::Steered,
-                Operation::Enqueue => DeliveryState::Queued,
+                Operation::Enqueue | Operation::SteerOrEnqueue => DeliveryState::Queued,
                 Operation::Start | Operation::Automatic => DeliveryState::Started,
             },
             at_ms: millis(SystemTime::now()),
@@ -787,7 +787,11 @@ mod native {
     }
     #[test]
     fn desktop_start_and_steer_preserve_owner_and_request_identity() {
-        for active in [false, true] {
+        for (active, operation) in [
+            (false, Operation::Automatic),
+            (true, Operation::Automatic),
+            (true, Operation::SteerOrEnqueue),
+        ] {
             let fixture = Fixture::new();
             let path = fixture.paths().codex_data.join("ipc/ipc.sock");
             fs::create_dir_all(path.parent().unwrap()).unwrap(); // plain directory
@@ -845,10 +849,9 @@ mod native {
                     },
                 );
             });
-            let receipt = fixture
-                .service(Provider::Codex)
-                .send(request(Provider::Codex))
-                .unwrap();
+            let mut request = request(Provider::Codex);
+            request.operation = operation;
+            let receipt = fixture.service(Provider::Codex).send(request).unwrap();
             assert_eq!(
                 receipt.state,
                 if active {
@@ -889,6 +892,126 @@ mod native {
         );
         assert_eq!(service.send(send).unwrap().state, DeliveryState::Uncertain);
         worker.join().unwrap();
+    }
+    #[test]
+    fn preferred_steer_queues_only_after_read_only_idle_or_absence() {
+        for mode in ["idle", "absent", "uncertain", "refused", "turn_changed"] {
+            let fixture = Fixture::new();
+            let owner_path = fixture.paths().codex_data.join("ipc/ipc.sock");
+            private_dir(owner_path.parent().unwrap()).unwrap();
+            let owner = if mode == "absent" {
+                None
+            } else {
+                let listener = UnixListener::bind(owner_path).unwrap();
+                Some(thread::spawn(move || {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    let initialize = frame_read(&mut socket);
+                    desktop_response(
+                        &mut socket,
+                        &initialize,
+                        json!({"clientId":"fixture-client"}),
+                    );
+                    let discover = frame_read(&mut socket);
+                    desktop_response(&mut socket, &discover, json!({}));
+                    assert_eq!(frame_read(&mut socket)["params"]["following"], true);
+                    frame_send(
+                        &mut socket,
+                        json!({"type":"broadcast","method":"thread-stream-state-changed","sourceClientId":"owner","version":11,
+                        "params":{"hostId":"local","conversationId":THREAD,"change":{"type":"snapshot","conversationState":{"turns":if mode=="idle" {json!([])} else {json!([{"turnId":"active-turn","status":"inProgress"}])}}}}}),
+                    );
+                    assert_eq!(frame_read(&mut socket)["params"]["following"], false);
+                    if mode == "idle" {
+                        let mut byte = [0];
+                        assert_eq!(
+                            socket.read(&mut byte).unwrap(),
+                            0,
+                            "idle owner receives no turn/start"
+                        );
+                        return;
+                    }
+                    let mutation = frame_read(&mut socket);
+                    assert_eq!(mutation["method"], "thread-follower-steer-turn");
+                    match mode {
+                        "uncertain" => {}
+                        "refused" => frame_send(
+                            &mut socket,
+                            json!({"type":"response","requestId":mutation["requestId"],"resultType":"error","handledByClientId":"owner","error":"steer-refused"}),
+                        ),
+                        "turn_changed" => desktop_response(
+                            &mut socket,
+                            &mutation,
+                            json!({"result":{"turnId":"different-turn"}}),
+                        ),
+                        _ => unreachable!(),
+                    }
+                }))
+            };
+            let queue_path = fixture
+                .paths()
+                .codex_data
+                .join("app-server-control/app-server-control.sock");
+            private_dir(queue_path.parent().unwrap()).unwrap();
+            let listener = UnixListener::bind(queue_path).unwrap();
+            let queue_expected = matches!(mode, "idle" | "absent");
+            let queue = if queue_expected {
+                let listener = listener.try_clone().unwrap();
+                Some(thread::spawn(move || {
+                    let (socket, _) = listener.accept().unwrap();
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    let mut ws = tungstenite::accept(socket).unwrap();
+                    let initialize = ws_read(&mut ws);
+                    assert_eq!(initialize["method"], "initialize");
+                    ws_reply(&mut ws, &initialize, json!({}));
+                    assert_eq!(ws_read(&mut ws)["method"], "initialized");
+                    let mutation = ws_read(&mut ws);
+                    assert_eq!(mutation["method"], "thread/queue/add");
+                    ws_reply(
+                        &mut ws,
+                        &mutation,
+                        json!({"queuedSubmission":{"id":"fixture-queued"}}),
+                    );
+                }))
+            } else {
+                None
+            };
+            let service = fixture.service(Provider::Codex);
+            let mut send = request(Provider::Codex);
+            send.operation = Operation::SteerOrEnqueue;
+            let receipt = service.send(send.clone()).unwrap();
+            assert_eq!(
+                receipt.state,
+                if queue_expected {
+                    DeliveryState::Queued
+                } else if mode == "refused" {
+                    DeliveryState::Failed
+                } else {
+                    DeliveryState::Uncertain
+                },
+                "{mode}"
+            );
+            assert_eq!(
+                service.send(send).unwrap().state,
+                receipt.state,
+                "duplicate is receipt-only"
+            );
+            if let Some(worker) = owner {
+                worker.join().unwrap();
+            }
+            if let Some(worker) = queue {
+                worker.join().unwrap();
+            } else {
+                listener.set_nonblocking(true).unwrap();
+                assert!(
+                    listener.accept().is_err(),
+                    "{mode}: no queue fallback after steer"
+                );
+            }
+        }
     }
     /// A long message to an app-server that stopped reading ends at the
     /// request's deadline, as uncertain, instead of holding the worker.

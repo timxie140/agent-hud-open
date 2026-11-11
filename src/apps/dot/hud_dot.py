@@ -35,7 +35,7 @@ ROOT = Path(os.environ.get('AGENTHUD_DOT_DATA', str(_data_home / 'AgentHUDPrivat
 EVENT = 'hud.message.created'
 MAILBOX = 'luo'
 LIMIT = 256 * 1024
-ADAPTER_VERSION = '0.2.0'
+ADAPTER_VERSION = '0.3.0'
 
 
 class Rejected(Exception):
@@ -309,10 +309,13 @@ def native_reply(source, message_id, reply_id, text):
 class Adapter:
     def __init__(self, database, post=webhook_post, clock=time.time,
                  encrypt=protect, decrypt=lambda x: protect(x, True), sink=native_reply,
-                 native_reply_wait=0):
+                 native_reply_wait=0, receipt_key=None):
         self.database, self.post, self.clock = str(database), post, clock
         self.encrypt, self.decrypt, self.sink = encrypt, decrypt, sink
         self.native_reply_wait = max(0, min(float(native_reply_wait), 6))
+        self.receipt_key = receipt_key if receipt_key is not None else secrets.token_bytes(32)
+        if not isinstance(self.receipt_key, bytes) or len(self.receipt_key) < 32:
+            raise Rejected('Protected native receipt key unavailable')
         with self.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS subscriptions ('
                        'id TEXT PRIMARY KEY, mailbox TEXT UNIQUE, callback TEXT, secret BLOB, expires REAL)')
@@ -429,7 +432,7 @@ class Adapter:
             db.execute('BEGIN IMMEDIATE')
             existing = db.execute('SELECT * FROM messages WHERE id=?', (message_id,)).fetchone()
             if existing:
-                if existing['source'] != source or existing['text'] != text:
+                if existing['origin'] != 'codex' or existing['source'] != source or existing['text'] != text:
                     raise Rejected('Message ID already belongs to different content')
                 return self.receipt(message_id, source)
             sub = self._subscription()
@@ -463,8 +466,11 @@ class Adapter:
         if transport == 'reserved':
             transport = 'pending_hud'
         return {'id': row['id'], 'state': row['state'], 'source': row['source'],
-                'dotAcknowledged': row['acknowledged'] is not None, 'replyId': row['reply_id'],
-                'replyText': row['reply_text'],
+                'origin': row['origin'], 'deliveryId': row['reply_id'],
+                'dotAcknowledged': row['acknowledged'] is not None if row['origin'] != 'dot' else None,
+                'replyId': row['reply_id'] if row['origin'] != 'dot' else None,
+                'replyText': row['reply_text'] if row['origin'] != 'dot' else None,
+                'messageText': row['text'] if row['origin'] == 'dot' else None,
                 'nativeReceipt': native,
                 'transportState': transport,
                 'recipientConfirmed': row['recipient_confirmed'] is not None,
@@ -472,7 +478,8 @@ class Adapter:
 
     def ack(self, message_id):
         self._subscription()
-        self.receipt(message_id)
+        if self.receipt(message_id)['origin'] != 'codex':
+            raise Rejected('Only an incoming message event can be acknowledged')
         with self.db() as db:
             db.execute('UPDATE messages SET acknowledged=COALESCE(acknowledged,?), '
                        'state=CASE WHEN reply_id IS NULL THEN ? ELSE state END WHERE id=?',
@@ -488,6 +495,8 @@ class Adapter:
             row = db.execute('SELECT * FROM messages WHERE id=?', (message_id,)).fetchone()
             if not row:
                 raise Rejected('Reply must name an actual received HUD message')
+            if row['origin'] == 'dot':
+                raise Rejected('A proactively sent message is not an incoming event to reply to')
             if row['reply_id']:
                 if row['reply_text'] != text:
                     raise Rejected('Message already has a different reply')
@@ -502,6 +511,9 @@ class Adapter:
         with self.db() as db:
             db.execute('UPDATE messages SET state=?,native_receipt=? WHERE id=?',
                        ('dot_replied', canonical(native), message_id))
+        return self.wait_native(message_id)
+
+    def wait_native(self, message_id):
         # The HUD's existing worker owns native delivery. Wait only for its
         # acknowledgement; never reserve, deliver or retry from this HTTP thread.
         deadline = time.monotonic() + self.native_reply_wait
@@ -537,6 +549,8 @@ class Adapter:
             return self.subscribe(params) if method.endswith('/subscribe') else self.unsubscribe(params)
         if method == 'tools/list':
             definitions = [('hud_ack_message', ['id'], 'Confirm a HUD event you actually received.'),
+                           ('hud_list_sessions', [], 'List fresh existing Codex sessions offered by this HUD. Never guess IDs. No new chats are created.'),
+                           ('hud_send_message', ['host_id', 'session_id', 'text', 'request_id'], 'Choose this entry’s Mac/Windows host.id and existing session from hud_list_sessions. session_id accepts a UUID or exact codex://threads/<UUID> URL. Use one new stable request_id per intended send; identical calls only read its receipt, never resend. Active Desktop steers; idle/no owner queues. Never use a new request_id to retry uncertain/refused sends. Await delivery_receipt.'),
                            ('hud_reply', ['id', 'text'], 'Reply once. transportState reports native queued/steered/started, or pending_hud while awaiting HUD. Never resend on pending/uncertain; recipientConfirmed is separate. Await delivery_receipt or query hud_get_delivery_status.'),
                            ('hud_get_delivery_status', ['id'], 'Read whether the actual recipient confirmed your reply. Read-only; never acknowledges delivery.')]
             if role == 'local':
@@ -546,7 +560,7 @@ class Adapter:
             return {'tools': [{'name': name, 'description': description, 'inputSchema': {
                 'type': 'object', 'properties': {x: {'type': 'string'} for x in fields},
                 'required': fields, 'additionalProperties': False}, 'annotations': {
-                    'readOnlyHint': name in ('hud_get_message', 'hud_dot_status', 'hud_get_delivery_status'), 'destructiveHint': False,
+                    'readOnlyHint': name in ('hud_get_message', 'hud_dot_status', 'hud_get_delivery_status', 'hud_list_sessions'), 'destructiveHint': False,
                     'openWorldHint': name not in ('hud_get_message', 'hud_dot_status')}} for name, fields, description in definitions]}
         if method.startswith('hud/internal/'):
             if role != 'local':
@@ -557,6 +571,12 @@ class Adapter:
             name, args = params.get('name'), params.get('arguments', {})
             if role == 'dot' and name == 'hud_get_delivery_status':
                 result = self.receipt(args.get('id'))
+            elif role == 'dot' and name == 'hud_list_sessions':
+                from dot_sessions import inventory
+                result = inventory(self)
+            elif role == 'dot' and name == 'hud_send_message':
+                from dot_sessions import send
+                result = send(self, args.get('session_id'), args.get('text'), args.get('request_id'), args.get('host_id'))
             elif role == 'dot' and name == 'hud_ack_message':
                 result = self.ack(args.get('id'))
             elif role == 'dot' and name == 'hud_reply':

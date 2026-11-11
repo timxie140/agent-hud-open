@@ -4,13 +4,17 @@ import hashlib
 import hmac
 import secrets
 import uuid
+import base64
 
 
 def migrate(db):
+    from dot_sessions import migrate as migrate_sessions
+    migrate_sessions(db)
     columns = {row[1] for row in db.execute('PRAGMA table_info(messages)')}
     for name, declaration in [('recipient_confirmed', 'REAL'),
                               ('receipt_state', 'TEXT'), ('receipt_event_id', 'TEXT'),
-                              ('delivery_challenge_hash', 'TEXT')]:
+                              ('delivery_challenge_hash', 'TEXT'),
+                              ('receipt_protocol', "TEXT NOT NULL DEFAULT 'legacy'")]:
         if name not in columns:
             db.execute('ALTER TABLE messages ADD COLUMN ' + name + ' ' + declaration)
 
@@ -18,25 +22,51 @@ def migrate(db):
 def pending(adapter):
     with adapter.db() as db:
         rows = db.execute("SELECT * FROM messages WHERE reply_id IS NOT NULL AND json_extract(native_receipt,'$.state')='pending_hud' ORDER BY created LIMIT 8").fetchall()
-    return [{'id': row['id'], 'replyId': row['reply_id'], 'source': row['source'],
+    return [{'id': row['id'], 'replyId': row['reply_id'], 'source': row['source'], 'origin': row['origin'],
              'text': row['reply_text']} for row in rows
             if row['native_receipt'] and json.loads(row['native_receipt']).get('state') == 'pending_hud']
 
 
-def claim(adapter, message_id):
-    """Reserve before the native mutation. A crashed claim is never re-sent."""
+def native_challenge(adapter, row):
     from hud_dot import canonical
+    binding = canonical(['agent-hud-native-receipt-v2', row['id'], row['reply_id'], row['source'],
+                         hashlib.sha256(row['reply_text'].encode()).hexdigest()]).encode()
+    return base64.urlsafe_b64encode(hmac.new(adapter.receipt_key, binding, hashlib.sha256).digest()).decode().rstrip('=')
+
+
+def claim(adapter, message_id, protocol='legacy'):
+    """Reserve before the native mutation. A crashed claim is never re-sent."""
+    from hud_dot import canonical, Rejected
+    if protocol not in ('legacy', 'native-v2'):
+        raise Rejected('Unknown native receipt protocol')
     with adapter.db() as db:
         db.execute('BEGIN IMMEDIATE')
         row = db.execute('SELECT * FROM messages WHERE id=?', (message_id,)).fetchone()
         if not row or not row['native_receipt'] or json.loads(row['native_receipt']).get('state') != 'pending_hud':
             return {'claimed': False}
-        challenge = secrets.token_urlsafe(24)
-        db.execute('UPDATE messages SET native_receipt=?,delivery_challenge_hash=? WHERE id=?',
+        challenge = native_challenge(adapter, row) if protocol == 'native-v2' else secrets.token_urlsafe(24)
+        db.execute('UPDATE messages SET native_receipt=?,delivery_challenge_hash=?,receipt_protocol=? WHERE id=?',
                    (canonical({'state': 'reserved', 'actualReceiptConfirmed': False}),
-                    hashlib.sha256(challenge.encode()).hexdigest(), message_id))
-    return {'claimed': True, 'id': row['id'], 'replyId': row['reply_id'],
-            'source': row['source'], 'text': row['reply_text'], 'deliveryChallenge': challenge}
+                    hashlib.sha256(challenge.encode()).hexdigest(), protocol, message_id))
+    result = {'claimed': True, 'id': row['id'], 'replyId': row['reply_id'],
+              'source': row['source'], 'origin': row['origin'], 'text': row['reply_text'], 'receiptProtocol': protocol}
+    if protocol == 'legacy':
+        result['deliveryChallenge'] = challenge
+    return result
+
+
+def authorization(adapter, reply_id, source):
+    """Private controller read after native proof; never exposed to Dot tools/events."""
+    from hud_dot import Rejected
+    with adapter.db() as db:
+        row = db.execute('SELECT * FROM messages WHERE reply_id=?', (reply_id,)).fetchone()
+    if (not row or row['source'] != source or row['receipt_protocol'] != 'native-v2'
+            or json.loads(row['native_receipt'] or '{}').get('state') not in ('reserved', 'accepted', 'uncertain')):
+        raise Rejected('Native receipt authorization unavailable for this recipient')
+    challenge = native_challenge(adapter, row)
+    if not hmac.compare_digest(hashlib.sha256(challenge.encode()).hexdigest(), row['delivery_challenge_hash'] or ''):
+        raise Rejected('Native receipt authorization identity changed')
+    return {'receiptProtocol': 'native-v2', 'deliveryChallenge': challenge}
 
 
 def complete(adapter, message_id, native):
@@ -84,7 +114,7 @@ def confirm(adapter, reply_id, source, challenge):
     event = {'eventId': event_id, 'name': EVENT, 'timestamp': timestamp(adapter.clock()),
              'cursor': None, 'data': {'kind': 'delivery_receipt', 'mailbox': MAILBOX,
              'message_id': row['id'], 'source': source,
-             'text': 'Recipient confirmed actual delivery of reply ' + reply_id}}
+             'text': 'Recipient confirmed actual delivery of ' + ('message ' if row['origin'] == 'dot' else 'reply ') + reply_id}}
     body = canonical(event).encode()
     state = 'uncertain'
     try:
@@ -100,10 +130,15 @@ def confirm(adapter, reply_id, source, challenge):
 
 def internal(adapter, action, params):
     from hud_dot import Rejected
+    if action == 'sessions':
+        from dot_sessions import publish
+        return publish(adapter, params)
     if action == 'pending':
         return {'messages': pending(adapter)}
     if action == 'claim':
-        return claim(adapter, params.get('id'))
+        return claim(adapter, params.get('id'), params.get('receiptProtocol', 'legacy'))
+    if action == 'receipt_authorization':
+        return authorization(adapter, params.get('id'), params.get('source'))
     if action == 'complete':
         return complete(adapter, params.get('id'), params.get('native'))
     if action == 'confirm':

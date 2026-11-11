@@ -8,6 +8,7 @@ import { Switch } from "@agent-hud/ui/components/switch";
 import { HUDArtwork as HUDLogo } from "@agent-hud/hud/HUDArtwork";
 import {
   agentVendorName,
+  agentOrderBlocks,
   defaultHUDConfig,
   type HUDConfig,
 } from "@agent-hud/hud/model";
@@ -64,32 +65,12 @@ export function PanelSection({
     update({ panelSections: next });
   };
 
-  const blocks = [
-    ...new Map([
-      ...snapshot.quotas.map(
-        (row) =>
-          [
-            row.vendor,
-            {
-              id: row.vendor,
-              source: row.vendor,
-              title: agentVendorName(row.vendor),
-            },
-          ] as const,
-      ),
-      ...snapshot.billing.map(
-        (account) =>
-          [
-            `api:${account.vendor}`,
-            {
-              id: `api:${account.vendor}`,
-              source: account.vendor,
-              title: `${agentVendorName(account.vendor)} · ${t("Balance", "余额")}`,
-            },
-          ] as const,
-      ),
-    ]).values(),
-  ];
+  const blocks = agentOrderBlocks(snapshot).map((block) => ({
+    ...block,
+    title: block.balance
+      ? `${agentVendorName(block.source)} · ${t("Balance", "余额")}`
+      : agentVendorName(block.source),
+  }));
   const allBlockKeys = [
     ...new Set([...config.panelOrder, ...blocks.map((block) => block.id)]),
   ];

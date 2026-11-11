@@ -79,6 +79,55 @@ class ConfigurationTests(unittest.TestCase):
         for secret in ['private-runtime', 'private-local', 'private-dot', 'private network details']:
             self.assertNotIn(secret, serialized)
 
+    def test_stop_preserves_saved_configuration_and_refuses_transport_actions(self):
+        previous = {'enabled': True, 'tunnelId': 'tunnel_fixture', 'runtimeApiKey': 'fixture-key',
+                    'localToken': 'fixture-local', 'dotToken': 'fixture-dot',
+                    'proxy': 'http://127.0.0.1:7890', 'instance': 'fixture-instance'}
+        with patch.object(runtime, 'load_config', return_value=previous), \
+                patch.object(runtime, 'write_configuration') as write, \
+                patch.object(runtime, 'rpc') as rpc:
+            result = runtime.control({'action': 'configure', 'arguments': {'enabled': False}})
+        saved = json.loads(write.call_args.args[1])
+        self.assertEqual(saved, dict(previous, enabled=False))
+        self.assertEqual((hud.ROOT / 'enabled').read_text(), 'false')
+        for field in ['enabled', 'running', 'ready', 'subscribed']:
+            self.assertFalse(result[field])
+        rpc.assert_not_called()
+        with patch.object(runtime, 'load_config', return_value=saved), \
+                patch.object(runtime, 'rpc') as rpc:
+            for action in ['send', 'pending', 'claim', 'confirm', 'sessions', 'receipt_authorization']:
+                with self.subTest(action=action), self.assertRaises(hud.Rejected):
+                    runtime.control({'action': action, 'arguments': {}})
+            rpc.assert_not_called()
+
+    def test_disabling_live_runtime_stops_only_its_owned_children(self):
+        config = {'enabled': True, 'runtimeApiKey': 'fixture-key', 'localToken': 'fixture-local',
+                  'dotToken': 'fixture-dot', 'tunnelId': 'tunnel_fixture', 'proxy': ''}
+        listener, tunnel = MagicMock(), MagicMock()
+        listener.poll.return_value = tunnel.poll.return_value = None
+        checks = iter([True, True, False])
+        with patch.object(runtime, 'load_config', side_effect=[config, dict(config, enabled=False)]), \
+                patch.object(runtime, 'port_available', return_value=True), \
+                patch.object(runtime.subprocess, 'Popen', side_effect=[listener, tunnel]) as spawn, \
+                patch.object(runtime.time, 'sleep'), patch.object(runtime.threading, 'Thread'):
+            runtime.run_owned(lambda: next(checks))
+        self.assertEqual(spawn.call_count, 2)
+        for child in [listener, tunnel]:
+            child.terminate.assert_called_once()
+            child.wait.assert_called_once_with(timeout=5)
+            child.kill.assert_not_called()
+
+    def test_enable_uses_saved_details_without_resubmitting_credentials(self):
+        previous = {'enabled': False, 'tunnelId': 'tunnel_fixture', 'runtimeApiKey': 'fixture-key',
+                    'localToken': 'fixture-local', 'dotToken': 'fixture-dot',
+                    'proxy': 'http://127.0.0.1:7890', 'instance': 'fixture-instance'}
+        with patch.object(runtime, 'load_config', return_value=previous), \
+                patch.object(runtime, 'write_configuration') as write:
+            saved = runtime.save_config({'enabled': True})
+        self.assertEqual(saved, dict(previous, enabled=True))
+        self.assertEqual(json.loads(write.call_args.args[1]), saved)
+        self.assertEqual((hud.ROOT / 'enabled').read_text(), 'true')
+
     def test_readiness_does_not_claim_connection_while_control_plane_is_failing(self):
         (hud.ROOT / 'tunnel-health.url').write_text('http://127.0.0.1:1234')
         config = {'enabled': True, 'runtimeApiKey': 'fixture-only', 'proxy': ''}

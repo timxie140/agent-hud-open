@@ -160,7 +160,7 @@ def control(request):
         return status(config)
     if not config.get('enabled'):
         raise hud.Rejected('Dot is disabled in HUD settings')
-    if action in {'pending', 'claim', 'complete', 'confirm'}:
+    if action in {'pending', 'claim', 'complete', 'confirm', 'sessions', 'receipt_authorization'}:
         return rpc(config, 'hud/internal/' + action, arguments)
     if action in {'send', 'get'}:
         source = arguments.get('source')
@@ -349,7 +349,7 @@ def main():
             from functools import partial
             config = load_config()
             hud.serve(hud.Adapter(hud.ROOT / 'state.sqlite', post=partial(hud.webhook_post, proxy=config.get('proxy') or None),
-                                  native_reply_wait=6),
+                                  native_reply_wait=6, receipt_key=config['localToken'].encode()),
                       8787, config['localToken'], config['dotToken'])
         elif args.supervise:
             supervise(args.supervise)

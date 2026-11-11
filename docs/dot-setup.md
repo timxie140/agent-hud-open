@@ -16,6 +16,13 @@ Dot 是 HUD 中独立的通信客户端，不能当作 Codex 会话或用一个�
    Windows 用当前用户 DPAPI，macOS 用登录 Keychain；无法访问安全存储时失败关闭，
    不回退成明文文件。留空密钥输入框会保留原密钥，不会清除或回显。
 
+保存并启用后，“保存并连接”右侧显示“停止连接”。点击会保存禁用状态，
+停止本 HUD 自有的 listener 与 tunnel，不会保存表单中尚未提交的 Tunnel、密钥或代理修改。
+已保存配置和既有订阅保留；停止期间不再通过本机 Dot 投递新消息，但无法撤回已经受理的消息。
+连接信息只需首次填写并保存。此后开启“启用”即可使用已保存配置自动连接，关闭开关立即停止；
+开关不会提交尚未保存的表单修改。修改连接信息时仍使用“保存并连接”。
+停止本机连接不等于删除 ChatGPT 的订阅任务。
+
 状态依次为启动、连接隧道、等待 Luo 订阅、已连接 Luo。启用不等于订阅成功。
 全局“智能体消息”权限仍须由用户允许，Dot 不会自动打开或绕过该权限。
 
@@ -42,6 +49,13 @@ Keychain 可能要求用户授权；拒绝后须由用户处理，程序不会�
    - 工具 `hud_ack_message`、`hud_reply`、`hud_get_delivery_status`
 4. 升级后在插件页重新扫描工具和事件，不要沿用只包含旧 payload schema 的缓存。
 
+新增工具后，在现有 **Dot-HUD-Mac / Dot-HUD-Win** 插件详情中执行 **Refresh**，
+确认目录列出 `hud_list_sessions` 和 `hud_send_message`。若目录已经更新、原 Luo
+仍只能看到旧工具，本机实测由用户在**原 Dot** 执行 `reboot dot` 后，新工具会在原会话出现。
+随后让 Luo 从正确机器入口只读调用 `hud_list_sessions`，核对 host 和目标 UUID。
+平台目录刷新与原 Dot 运行实例加载工具是两步；不要仅凭 HUD 重启或订阅恢复判断工具已更新。
+此步骤不要求新建替代聊天或重复订阅。
+
 不要猜 Dot ID，不新建替代聊天来冒充 Luo。`dot:luo` 是注册的逻辑邮箱 ID。
 
 ## 3. 给 Luo 的订阅说明
@@ -63,6 +77,18 @@ HTTPS、公网地址和签名；代理方式仍将 callback 固定到已验证�
 原域名，不允许 Fake-IP/私有地址或重定向。回调 URL 和签名秘密不会出现在日志中。
 显式 `ttlMs:null` 才授予无固定到期；省略时仍默认一小时并由平台刷新。工作区策略
 或平台任务被停止时不能靠本机伪造恢复；HUD 会显示等待订阅，须在原 Luo 中恢复。
+
+### 取消平台订阅
+
+在 ChatGPT 的 **Scheduled（计划任务）** 中找到原 Luo 对应的事件任务，使用该任务的
+停用或删除操作；清空事件列表不是退订方式。不要删除 Luo 聊天或新建重复订阅。
+平台协议 `events/unsubscribe` 使用原事件名 `hud.message.created`、
+原参数 `{"mailbox":"luo"}` 和原 webhook 绑定来定位订阅，由平台提供原 callback，
+不需要用户读取或粘贴地址。HUD 已实现匹配退订，收到后下一轮状态刷新显示等待订阅。
+只暂停平台任务是否立即产生退订请求须核对实际结果，不能仅凭任务状态声称 HUD 已解绑。
+
+官方参考：[Dot 任务控制](https://learn.chatgpt.com/docs/dots/controls#stop-work)、
+[MCP Events 退订协议](https://developers.openai.com/plugins/build/mcp-events#stop-a-subscription)。
 
 ## 4. Codex 像给 DSH 一样发送
 
@@ -90,19 +116,14 @@ HUD 在原 Codex Desktop owner 的规范输入记录中核对目标线程、请�
 Codex 可能将客户端请求 ID 换成原生 item ID；此时使用规范输入的完整信封
 （原请求和回信 ID）及精确指纹绑定，仍拒绝显式冲突的客户端身份或重复输入。
 没有可验证 owner、输入记录尚未进入规范历史或客户端格式不受支持时保持未确认，
-并保留以下手动工具途径。原生观察只读，不创建或恢复替代聊天。
+原生观察只读，不创建或恢复替代聊天。
 自动确认先持久保留尝试，同一回信只尝试一次；崩溃或不确定结果不自动补发通知。
 
-Luo 回信作为真实输入到达原 Codex 线程后，消息 envelope 会给出 `reply_id`。
-此时调用：
-
-```json
-confirm_delivery({"id":"实际收到的回信reply_id","delivery_challenge":"实际输入中的挑战值"})
-```
-
-只能由该回信的真实目标 Codex 线程确认。挑战值仅随真实输入传递，查询不会返回，
-数据库只保存其哈希；只用于确认，不在聊天中复述。**读取 get_message 的答案不算实际收到**，
-不能据查询文本调用 confirm_delivery。确认生成一条 `delivery_receipt` 事件通知 Luo；
+新消息仅包含 Dot 信封和正文，不再附带手动确认提示或可见确认凭据，也不提供手动确认工具。
+HUD 验证唯一的真实收件输入后，通过已认证的本机控制通道取得绑定原消息、收件线程与正文的
+确认凭据；凭据由现有安全存储中的本机角色密钥派生，数据库只保存其哈希。
+重启后可恢复验证，凭据不会进入聊天、公开工具结果或通知；原有已投递旧格式消息仍兼容自动确认。
+**读取 get_message 的答案不算实际收到**。确认生成一条 `delivery_receipt` 事件通知 Luo；
 重复确认只读回原结果，不再发事件。平台 HTTP 2xx 仅为通知受理，Luo 仍可通过
 hud_get_delivery_status 读取持久的确认记录。丢失/不确定的通知不自动重发。
 若此时订阅已过期或被停止，合法收件确认仍会保存，通知状态为
@@ -123,15 +144,48 @@ hud_get_delivery_status 读取持久的确认记录。丢失/不确定的通知�
 若个人 HUD 布局限定了智能体列表，需在布局中选入 Dot；不会覆盖已有显示偏好。
 Dot 没有用量配额，不显示虚构的 token、余额或额度。
 
-## 5. 故障排查与运行数据
+## 5. 从 Dot 主动选择现有 Codex 聊天
+
+在目标机器对应的 MCP 入口调用 `hud_list_sessions()`。返回的 `host` 包含
+`label`（Mac / Windows）、`platform` 和当前 HUD 的固定实例 `id`；
+`sessions` 只包含本机 HUD 当前列出的现有 Codex 主聊天，提供标题、UUID 和 `codex://threads/<UUID>`。
+列表不包含项目路径或凭据，消息权限关闭或列表过期时拒绝选择目标。
+
+用户可把聊天链接发给 Luo，例如 `[工作聊天](codex://threads/<UUID>)`。
+Luo 应先从正确机器的入口取列表，核对 `host`，再按 URL 中的 UUID 精确匹配；
+未列出的 ID 不能用于创建、恢复或替代一个聊天。主动发送示例：
+若目标未列出，先由用户在目标机器正常打开该聊天，待 HUD 识别后重新取列表。
+
+```json
+hud_send_message({
+  "host_id": "取自该入口返回的 host.id",
+  "session_id": "取自列表的 UUID 或 codex://threads/<UUID>",
+  "text": "消息内容",
+  "request_id": "luo-task-20261111-001"
+})
+```
+
+每条意图使用一个新的稳定 `request_id`。相同 request_id、目标和正文的重复调用只读取原回执，
+包括重启、拒绝和不确定结果之后；不得换 request_id 来自动重发。机器实例 ID 不匹配时拒绝，
+所以 Windows 与 Mac 即便有相同聊天 UUID，也不能跨入口投递。
+
+主动消息及 `hud_reply` 均使用自动策略：可验证的 Codex Desktop owner 正在运行时执行原生 steer；
+空闲或确认没有 Desktop owner 时进入原生队列。不确定或拒绝的 steer 不会改走队列重发。
+队列不会创建替代聊天。其他原生客户端不在此功能范围内。
+
+`hud_send_message` 返回 `id` / `deliveryId` 和 `transportState`。
+可用同入口 `hud_get_delivery_status({"id":"返回的 id"})` 只读跟踪；
+实际输入被验证后自动生成 `delivery_receipt`，Luo 仅记录，不再 ACK 或回复回执。
+
+## 6. 故障排查与运行数据
 
 - **等待订阅**：核插件启用、事件扫描及 workspace 的事件任务权限，保留平台原始错误。
 - **端口占用**：结束用户启动的旧 Dot 临时进程，勿结束不明进程或启动第二个相同隧道。
 - **隧道未就绪**：核 tunnel ID、Read + Use 权限、workspace 关联和现有代理。
 - **callback_* 错误**：查看有界 `diagnostics.jsonl` 的类别；不允许关闭 TLS、签名或公网校验。
 - **native refused/uncertain**：记录原生状态及原消息 ID，不自动换路重投。
-- **原生受理但没有最终确认**：收件线程尚未实际收到或未调用 confirm_delivery，不能声称成功。
-- **没有 confirm_delivery 工具**：刷新 HUD MCP 工具列表；不得用普通聊天 ACK 冒充该回执。
+- **原生受理但没有最终确认**：尚未取得唯一、可验证的原生收件记录；保持未确认，不能声称成功。
+- **实际收到但尚未自动确认**：保留原消息 ID，核对原生 owner 与规范收件记录；不要用普通聊天 ACK 冒充回执，也不要自动重发。
 - **macOS 安全提示或 Keychain 拒绝**：如实报告，使用系统支持的授权方式；不移除隔离属性或绕过安全限制。
 
 数据位于当前用户的 `AgentHUDPrivate/dot-client`（Windows 在 LocalAppData，macOS 在

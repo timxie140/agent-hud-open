@@ -12,6 +12,7 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     Operation::Automatic,
     Operation::Start,
     Operation::Steer,
+    Operation::SteerOrEnqueue,
     Operation::Enqueue,
 ];
 
@@ -27,7 +28,11 @@ pub(super) fn deliver(
         .as_deref()
         .filter(|thread| valid_uuid(thread))
         .ok_or_else(|| Failure::InvalidInput("Codex thread identity".into()))?;
-    if request.operation != Operation::Enqueue {
+    if request.operation == Operation::SteerOrEnqueue {
+        if let Some(receipt) = super::desktop::deliver(data, target, request, thread, timeout)? {
+            return Ok(receipt);
+        }
+    } else if request.operation != Operation::Enqueue {
         return super::desktop::deliver(data, target, request, thread, timeout)?.ok_or_else(|| {
             Failure::Unavailable(
                 "No active Codex Desktop owner; Windows CLI owner control is unavailable".into(),

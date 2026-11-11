@@ -1,5 +1,6 @@
 import json
 import unittest
+from pathlib import Path
 import hud_dot as hud
 import dot_receipts as receipts
 import test_hud_dot as fixtures
@@ -152,6 +153,62 @@ class ReceiptTests(unittest.TestCase):
         with self.assertRaises(hud.Rejected):
             receipts.confirm(self.adapter, self.reply['replyId'], fixtures.SOURCE, 'not-from-input')
         self.assertFalse(self.adapter.receipt('m-fixture')['recipientConfirmed'])
+
+    def test_native_authorization_is_private_and_not_a_public_query_or_claim_result(self):
+        with self.assertRaises(hud.Rejected):
+            receipts.authorization(self.adapter, self.reply['replyId'], fixtures.SOURCE)
+        claimed = receipts.claim(self.adapter, 'm-fixture', 'native-v2')
+        self.assertNotIn('deliveryChallenge', claimed)
+        self.assertEqual(claimed['receiptProtocol'], 'native-v2')
+        receipts.complete(self.adapter, 'm-fixture', {'state': 'accepted'})
+        for source in [fixtures.OTHER, None]:
+            with self.assertRaises(hud.Rejected):
+                receipts.authorization(self.adapter, self.reply['replyId'], source)
+        with self.assertRaises(hud.Rejected):
+            self.adapter.rpc('dot', {'method':'hud/internal/receipt_authorization',
+                'params':{'id':self.reply['replyId'], 'source':fixtures.SOURCE}})
+        authorization = receipts.authorization(self.adapter, self.reply['replyId'], fixtures.SOURCE)
+        token = authorization['deliveryChallenge']
+        self.assertNotIn(token, json.dumps(claimed))
+        self.assertNotIn(token, json.dumps(self.adapter.receipt('m-fixture')))
+        self.assertNotIn(token.encode(), Path(self.adapter.database).read_bytes())
+        self.assertFalse(self.adapter.receipt('m-fixture')['recipientConfirmed'])
+        with self.assertRaises(hud.Rejected):
+            receipts.confirm(self.adapter, self.reply['replyId'], fixtures.SOURCE, 'wrong-native-token')
+        result = receipts.confirm(self.adapter, self.reply['replyId'], fixtures.SOURCE, token)
+        self.assertTrue(result['recipientConfirmed'])
+        before = len(self.transport.calls)
+        receipts.confirm(self.adapter, self.reply['replyId'], fixtures.SOURCE, token)
+        self.assertEqual(len(self.transport.calls), before)
+        self.assertNotIn(token, repr(self.transport.calls))
+        self.assertNotIn(token.encode(), Path(self.adapter.database).read_bytes())
+
+    def test_native_authorization_recovers_after_restart_but_rejects_key_or_content_changes(self):
+        receipts.claim(self.adapter, 'm-fixture', 'native-v2')
+        receipts.complete(self.adapter, 'm-fixture', {'state':'accepted'})
+        token = receipts.authorization(self.adapter, self.reply['replyId'], fixtures.SOURCE)
+        def reloaded(key):
+            return hud.Adapter(self.adapter.database, post=self.transport, clock=lambda:self.now,
+                encrypt=self.adapter.encrypt, decrypt=self.adapter.decrypt, receipt_key=key)
+        same = reloaded(self.adapter.receipt_key)
+        self.assertEqual(receipts.authorization(same, self.reply['replyId'], fixtures.SOURCE), token)
+        with self.assertRaises(hud.Rejected):
+            receipts.authorization(reloaded(b'x' * 32), self.reply['replyId'], fixtures.SOURCE)
+        with self.adapter.db() as db:
+            db.execute('UPDATE messages SET reply_text=? WHERE id=?', ('changed body', 'm-fixture'))
+        with self.assertRaises(hud.Rejected):
+            receipts.authorization(same, self.reply['replyId'], fixtures.SOURCE)
+
+    def test_native_authorization_refuses_legacy_and_refused_deliveries(self):
+        self.received()
+        with self.assertRaises(hud.Rejected):
+            receipts.authorization(self.adapter, self.reply['replyId'], fixtures.SOURCE)
+        self.tearDown()
+        self.setUp()
+        receipts.claim(self.adapter, 'm-fixture', 'native-v2')
+        receipts.complete(self.adapter, 'm-fixture', {'state':'refused'})
+        with self.assertRaises(hud.Rejected):
+            receipts.authorization(self.adapter, self.reply['replyId'], fixtures.SOURCE)
 
 
 if __name__ == '__main__':

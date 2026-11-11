@@ -18,6 +18,7 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     Operation::Automatic,
     Operation::Start,
     Operation::Steer,
+    Operation::SteerOrEnqueue,
     Operation::Enqueue,
     Operation::Interrupt,
 ];
@@ -35,6 +36,14 @@ pub(super) fn deliver(
         .ok_or_else(|| Failure::Unavailable("Known target has no Codex thread identity".into()))?;
     if !valid_uuid(thread) {
         return Err(Failure::InvalidInput("Codex thread identity".into()));
+    }
+    if request.operation == Operation::SteerOrEnqueue {
+        if let Some(receipt) = desktop(data, target, request, thread, timeout)? {
+            return Ok(receipt);
+        }
+        // Only a read-only absence/idle result permits queueing. A refused or
+        // uncertain steer returns above as an error, never as a second send.
+        return enqueue(data, target, request, thread, timeout, queue);
     }
     if request.operation == Operation::Enqueue {
         return enqueue(data, target, request, thread, timeout, queue);
