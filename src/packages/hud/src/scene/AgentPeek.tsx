@@ -24,6 +24,14 @@ export function peekItems(
   color: (level: HUDVendor["level"]) => string = statusColor,
   display?: QuotaDisplay,
 ): PeekItem[] {
+  if (vendor.key === "dot")
+    return [
+      {
+        id: "connection",
+        label: zh ? "连接状态" : "Connection",
+        value: vendor.usage ?? "--",
+      },
+    ];
   const seen = new Set<string>();
   const items: PeekItem[] = vendor.quotas
     .filter((q) => {
@@ -194,8 +202,18 @@ export function AgentPeek({
             height: 18 * scale,
           }}
         >
-          <span style={{ opacity: 0.55 }}>{zh ? "额度" : "Quota"}</span>
-          <strong>--</strong>
+          <span style={{ opacity: 0.55 }}>
+            {vendor.key === "dot"
+              ? zh
+                ? "连接状态"
+                : "Connection"
+              : zh
+                ? "额度"
+                : "Quota"}
+          </span>
+          <strong>
+            {vendor.key === "dot" ? (vendor.usage ?? "--") : "--"}
+          </strong>
         </div>
       )}
       {vendor.balance && (

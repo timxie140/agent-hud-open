@@ -1,15 +1,19 @@
-# Dot / Luo 接入与实际送达回执
+# Dot 接入与实际送达回执（技术说明）
 
 Dot 是 HUD 中独立的通信客户端，不能当作 Codex 会话或用一个猜测的聊天 ID 代替。
 本版本支持 macOS、Windows；不需要 Codex Bridge。回程沿用 HUD 既有 Codex
 投递通道，不新建或接管替代聊天，也不自行恢复另一个会话。
+
+首次使用请先阅读[Dot连接指南](Dot连接指南.md)，其中包含 Platform 入口、最小权限、完整配置步骤及可复制的订阅提示词。
+
+新订阅使用 `{"mailbox":"dot"}`；旧参数 `{"mailbox":"luo"}` 兼容同一个绑定，不创建第二个邮箱。`dot:luo` 是保留兼容的本机消息路由标识，不是个人名字。
 
 ## 1. 在 HUD 配置一次
 
 1. 安装包含 Dot sidecar 和独立 tunnel-client 的完整构建。
 2. 打开 **设置 → 智能体 → Dot**，打开“启用”。
 3. 填写现有或新建的 **Tunnel ID** 和有对应隧道 Read + Use 权限的 **Runtime API key**。
-   隧道还须关联 Luo 所在的 ChatGPT workspace；仅关联 Platform organization 不够。
+   隧道还须关联 Dot 所在的 ChatGPT workspace；仅关联 Platform organization 不够。
 4. 如本机通过代理联网，在“本机 HTTP 代理”填写现有的回环代理，例如
    `http://127.0.0.1:7890`。Windows 会预填已配置且无凭据的回环代理；可清空直连。
 5. 点击“保存并连接”。密钥只在本机填写，不发到聊天、命令行或 GitHub。
@@ -23,7 +27,7 @@ Dot 是 HUD 中独立的通信客户端，不能当作 Codex 会话或用一个�
 开关不会提交尚未保存的表单修改。修改连接信息时仍使用“保存并连接”。
 停止本机连接不等于删除 ChatGPT 的订阅任务。
 
-状态依次为启动、连接隧道、等待 Luo 订阅、已连接 Luo。启用不等于订阅成功。
+状态依次为启动、连接隧道、等待 Dot 订阅、已连接。启用不等于订阅成功。
 全局“智能体消息”权限仍须由用户允许，Dot 不会自动打开或绕过该权限。
 
 以后启动 HUD 会自动启动启用的 Dot 连接，客户端注册及订阅数据持久保存，
@@ -39,30 +43,30 @@ Keychain 可能要求用户授权；拒绝后须由用户处理，程序不会�
 不从旧进程提取密钥；在 HUD 中重新安全输入一次。新版本首次连接需重新订阅，
 之后自动恢复持久状态并接受平台刷新，不要求反复手工注册。
 
-## 2. 在现有 Luo 中连接插件
+## 2. 在现有 Dot 中连接插件
 
 1. 在 ChatGPT Plugins 添加自定义 MCP server，名称可为 **Dot-HUD**。
 2. Connection 选择 **Tunnel**，使用 HUD 中相同的 tunnel ID。
    当前实现通过私有隧道注入上游认证，无需另填 sidecar 的局部访问密钥。
-3. 在**现有 Luo** 中启用该插件，核实有：
+3. 在**现有 Dot** 中启用该插件，核实有：
    - 事件 `hud.message.created`
-   - 工具 `hud_ack_message`、`hud_reply`、`hud_get_delivery_status`
+   - 工具 `hud_ack_message`、`hud_reply`、`hud_get_delivery_status`、`hud_list_sessions`、`hud_send_message`
 4. 升级后在插件页重新扫描工具和事件，不要沿用只包含旧 payload schema 的缓存。
 
 新增工具后，在现有 **Dot-HUD-Mac / Dot-HUD-Win** 插件详情中执行 **Refresh**，
-确认目录列出 `hud_list_sessions` 和 `hud_send_message`。若目录已经更新、原 Luo
+确认目录列出 `hud_list_sessions` 和 `hud_send_message`。若目录已经更新、原 Dot
 仍只能看到旧工具，本机实测由用户在**原 Dot** 执行 `reboot dot` 后，新工具会在原会话出现。
-随后让 Luo 从正确机器入口只读调用 `hud_list_sessions`，核对 host 和目标 UUID。
+随后让 Dot 从正确机器入口只读调用 `hud_list_sessions`，核对 host 和目标 UUID。
 平台目录刷新与原 Dot 运行实例加载工具是两步；不要仅凭 HUD 重启或订阅恢复判断工具已更新。
 此步骤不要求新建替代聊天或重复订阅。
 
-不要猜 Dot ID，不新建替代聊天来冒充 Luo。`dot:luo` 是注册的逻辑邮箱 ID。
+不要猜 Dot ID，不新建替代聊天来冒充 Dot。`dot:luo` 是注册的逻辑邮箱 ID。
 
-## 3. 给 Luo 的订阅说明
+## 3. 给 Dot 的订阅说明
 
-将以下说明发送到现有 Luo（只需要首次设置，或实际订阅失效需要恢复时）：
+将以下说明发送到现有 Dot（只需要首次设置，或实际订阅失效需要恢复时）：
 
-> 请订阅 Dot-HUD 的 `hud.message.created`，arguments 为 `{"mailbox":"luo"}`。
+> 请订阅 Dot-HUD 的 `hud.message.created`，arguments 为 `{"mailbox":"dot"}`。
 > 若工作区和订阅工具支持，请显式请求 `ttlMs: null`，保留无固定到期的订阅。
 > data.kind 为 `message` 时，先调用 `hud_ack_message`，id 使用
 > data.message_id；需要回复时调用一次 `hud_reply`，id 仍用原消息 ID。
@@ -76,14 +80,15 @@ Keychain 可能要求用户授权；拒绝后须由用户处理，程序不会�
 HTTPS、公网地址和签名；代理方式仍将 callback 固定到已验证公网 IP，TLS 校验
 原域名，不允许 Fake-IP/私有地址或重定向。回调 URL 和签名秘密不会出现在日志中。
 显式 `ttlMs:null` 才授予无固定到期；省略时仍默认一小时并由平台刷新。工作区策略
-或平台任务被停止时不能靠本机伪造恢复；HUD 会显示等待订阅，须在原 Luo 中恢复。
+或平台任务被停止时不能靠本机伪造恢复；HUD 会显示等待订阅，须在原 Dot 中恢复。
 
 ### 取消平台订阅
 
-在 ChatGPT 的 **Scheduled（计划任务）** 中找到原 Luo 对应的事件任务，使用该任务的
-停用或删除操作；清空事件列表不是退订方式。不要删除 Luo 聊天或新建重复订阅。
+在 ChatGPT 的 **Scheduled（计划任务）** 中找到对应事件任务并手动删除。
+新配置使用固定任务名“Dot-HUD 通信 · Mac”或“Dot-HUD 通信 · Windows”；已有任务以实际名称为准。
+清空事件列表不是退订方式。不要删除 Dot 聊天或新建重复订阅。
 平台协议 `events/unsubscribe` 使用原事件名 `hud.message.created`、
-原参数 `{"mailbox":"luo"}` 和原 webhook 绑定来定位订阅，由平台提供原 callback，
+该任务的原参数（新任务为 `{"mailbox":"dot"}`，旧任务可为 `{"mailbox":"luo"}`）和原 webhook 绑定来定位订阅，由平台提供原 callback，
 不需要用户读取或粘贴地址。HUD 已实现匹配退订，收到后下一轮状态刷新显示等待订阅。
 只暂停平台任务是否立即产生退订请求须核对实际结果，不能仅凭任务状态声称 HUD 已解绑。
 
@@ -100,7 +105,7 @@ send_message({"to":"dot:luo","text":"一次性通信验证 YOUR-UNIQUE-MARKER"})
 get_message({"id":"发送返回的消息ID"})
 ```
 
-必须从列表核对 `client=dot`、`id=dot:luo`、标题 Luo 和可达状态。
+必须从列表核对 `client=dot`、`id=dot:luo`、标题 Dot 和可达状态。
 消息源来自 Codex MCP 执行器的真实线程元数据，不接受模型任意指定另一线程。
 没有可识别发送身份、未启用、无有效订阅或权限关闭时拒绝，不能换身份绕过。
 
@@ -123,8 +128,8 @@ Codex 可能将客户端请求 ID 换成原生 item ID；此时使用规范输�
 HUD 验证唯一的真实收件输入后，通过已认证的本机控制通道取得绑定原消息、收件线程与正文的
 确认凭据；凭据由现有安全存储中的本机角色密钥派生，数据库只保存其哈希。
 重启后可恢复验证，凭据不会进入聊天、公开工具结果或通知；原有已投递旧格式消息仍兼容自动确认。
-**读取 get_message 的答案不算实际收到**。确认生成一条 `delivery_receipt` 事件通知 Luo；
-重复确认只读回原结果，不再发事件。平台 HTTP 2xx 仅为通知受理，Luo 仍可通过
+**读取 get_message 的答案不算实际收到**。确认生成一条 `delivery_receipt` 事件通知 Dot；
+重复确认只读回原结果，不再发事件。平台 HTTP 2xx 仅为通知受理，Dot 仍可通过
 hud_get_delivery_status 读取持久的确认记录。丢失/不确定的通知不自动重发。
 若此时订阅已过期或被停止，合法收件确认仍会保存，通知状态为
 `notification_unavailable`；不会向失效订阅发送，也不会自动补发。
@@ -132,10 +137,10 @@ hud_get_delivery_status 读取持久的确认记录。丢失/不确定的通知�
 | 状态 | 能证明什么 |
 | --- | --- |
 | webhook_accepted / queued | 事件被接收或消息在队列中 |
-| dotAcknowledged=true | Luo 调用了实际接收确认 |
-| replyId / replyText | Luo 调用了主动回复工具 |
+| dotAcknowledged=true | Dot 调用了实际接收确认 |
+| replyId / replyText | Dot 调用了主动回复工具 |
 | nativeReceipt accepted | 原生 HUD 接受了回程投递 |
-| recipientConfirmed=true | 真实收件输入已由原生 owner 验证，或收件 Codex 已提交合法最终确认 |
+| recipientConfirmed=true | 真实收件输入已由原生 owner 验证（兼容旧客户端的合法确认） |
 
 本服务不把原生 accepted、查询结果或模型自行复述当作最终送达确认。
 退出或崩溃后已经保留的投递 reservation 不会自动重新发送。
@@ -151,8 +156,8 @@ Dot 没有用量配额，不显示虚构的 token、余额或额度。
 `sessions` 只包含本机 HUD 当前列出的现有 Codex 主聊天，提供标题、UUID 和 `codex://threads/<UUID>`。
 列表不包含项目路径或凭据，消息权限关闭或列表过期时拒绝选择目标。
 
-用户可把聊天链接发给 Luo，例如 `[工作聊天](codex://threads/<UUID>)`。
-Luo 应先从正确机器的入口取列表，核对 `host`，再按 URL 中的 UUID 精确匹配；
+用户可把聊天链接发给 Dot，例如 `[工作聊天](codex://threads/<UUID>)`。
+Dot 应先从正确机器的入口取列表，核对 `host`，再按 URL 中的 UUID 精确匹配；
 未列出的 ID 不能用于创建、恢复或替代一个聊天。主动发送示例：
 若目标未列出，先由用户在目标机器正常打开该聊天，待 HUD 识别后重新取列表。
 
@@ -161,7 +166,7 @@ hud_send_message({
   "host_id": "取自该入口返回的 host.id",
   "session_id": "取自列表的 UUID 或 codex://threads/<UUID>",
   "text": "消息内容",
-  "request_id": "luo-task-20261111-001"
+  "request_id": "dot-task-001"
 })
 ```
 
@@ -175,7 +180,7 @@ hud_send_message({
 
 `hud_send_message` 返回 `id` / `deliveryId` 和 `transportState`。
 可用同入口 `hud_get_delivery_status({"id":"返回的 id"})` 只读跟踪；
-实际输入被验证后自动生成 `delivery_receipt`，Luo 仅记录，不再 ACK 或回复回执。
+实际输入被验证后自动生成 `delivery_receipt`，Dot 仅记录，不再 ACK 或回复回执。
 
 ## 6. 故障排查与运行数据
 

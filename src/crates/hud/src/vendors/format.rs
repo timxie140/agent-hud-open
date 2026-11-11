@@ -7,14 +7,14 @@ use serde_json::json;
 pub(super) fn dot_connection_label(snapshot: &Value) -> &'static str {
     let status = &snapshot["connection"]["dot"];
     let labels = if snapshot["language"] == "zh" {
-        ["已关闭", "正在启动", "连接隧道", "等待订阅", "已连接 Luo"]
+        ["已关闭", "正在启动", "连接隧道", "等待 Dot 订阅", "已连接"]
     } else {
         [
             "Off",
             "Starting",
             "Connecting",
-            "Awaiting subscription",
-            "Connected to Luo",
+            "Awaiting Dot subscription",
+            "Connected",
         ]
     };
     labels[if status["enabled"] != true {

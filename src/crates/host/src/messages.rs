@@ -22,6 +22,8 @@ use std::{
 };
 use tauri::Manager;
 
+mod sessions;
+
 const LOOK: Duration = Duration::from_secs(5);
 
 /// The host's own senders: their receipts, and the Claude jobs it follows.
@@ -152,10 +154,12 @@ impl AgentMessages {
             .upgrade()
             .ok_or("The application is stopping")?;
         let backend = backend.lock().unwrap_or_else(PoisonError::into_inner);
-        backend
+        let snapshot = backend
             .snapshot
             .clone()
-            .ok_or_else(|| "Application data is loading".into())
+            .ok_or_else(|| "Application data is loading".to_owned())?;
+        drop(backend);
+        Ok(sessions::for_messages(snapshot, self.query()))
     }
 
     /// The app's queries (`session_detail` pages), each under the

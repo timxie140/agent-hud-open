@@ -149,7 +149,8 @@
   gap: 8px;
   padding: 14px 16px;
 }
-.dot-field input {
+.dot-field input,
+.dot-field textarea {
   width: 100%;
   box-sizing: border-box;
   padding: 9px 12px;
@@ -159,7 +160,13 @@
   color: inherit;
   font: inherit;
 }
-.dot-field input:focus-visible {
+.dot-field textarea {
+  resize: vertical;
+  min-height: 160px;
+  line-height: 1.6;
+}
+.dot-field input:focus-visible,
+.dot-field textarea:focus-visible {
   outline: 2px solid #1688fa;
   outline-offset: 2px;
 }

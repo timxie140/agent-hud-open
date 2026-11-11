@@ -279,7 +279,7 @@ fn dot_connection_labels_match_the_webview_and_native_window_measurements() {
     let mut snapshot = json!({"language":"en","quotas":[],"billing":[],"sessions":[],
         "providers":[{"id":"dot","detected":true,"enabled":true}],
         "connection":{"dot":{"enabled":true,"running":true,"ready":true,"subscribed":true}}});
-    for (language, label) in [("en", "Connected to Luo"), ("zh", "已连接 Luo")] {
+    for (language, label) in [("en", "Connected"), ("zh", "已连接")] {
         snapshot["language"] = json!(language);
         let rows = vendors(&snapshot, "simple", 0);
         assert_eq!(rows.len(), 1);
@@ -290,6 +290,6 @@ fn dot_connection_labels_match_the_webview_and_native_window_measurements() {
     snapshot["connection"]["dot"]["subscribed"] = json!(false);
     assert_eq!(
         meter_label(&vendors(&snapshot, "simple", 0)[0], false),
-        "等待订阅"
+        "等待 Dot 订阅"
     );
 }

@@ -26,12 +26,7 @@ impl Messaging {
             }
             let identifies = match message.reply_to.as_deref() {
                 Some(parent) => identifies_reply(input.text(), parent, &message.id),
-                None => {
-                    input.text().lines().next()
-                        == Some(
-                            format!("[Agent HUD · Dot Luo; message_id={}]", message.id).as_str(),
-                        )
-                }
+                None => identifies_header(input.text(), &format!("message_id={}", message.id)),
             };
             if !identifies {
                 continue;
@@ -76,8 +71,14 @@ impl Messaging {
 }
 
 fn identifies_reply(text: &str, parent: &str, id: &str) -> bool {
-    text.lines().next()
-        == Some(format!("[Agent HUD · Dot Luo; reply_to={parent}; reply_id={id}]").as_str())
+    identifies_header(text, &format!("reply_to={parent}; reply_id={id}"))
+}
+
+fn identifies_header(text: &str, identity: &str) -> bool {
+    // Already delivered inputs keep their exact fingerprint across upgrades.
+    ["Dot", "Dot Luo"].iter().any(|name| {
+        text.lines().next() == Some(format!("[Agent HUD · {name}; {identity}]").as_str())
+    })
 }
 
 fn receipt_challenge<'a>(text: &'a str, id: &str) -> Option<&'a str> {
@@ -97,10 +98,16 @@ mod tests {
     use super::*;
     #[test]
     fn actual_input_must_identify_both_reply_and_original_request() {
-        let text = "[Agent HUD · Dot Luo; reply_to=m-parent; reply_id=m-reply]\nACK isolated";
-        assert!(identifies_reply(text, "m-parent", "m-reply"));
-        assert!(!identifies_reply(text, "m-other", "m-reply"));
-        assert!(!identifies_reply(text, "m-parent", "m-other"));
+        for name in ["Dot", "Dot Luo"] {
+            let text =
+                format!("[Agent HUD · {name}; reply_to=m-parent; reply_id=m-reply]\nACK isolated");
+            assert!(identifies_reply(&text, "m-parent", "m-reply"));
+            assert!(!identifies_reply(&text, "m-other", "m-reply"));
+            assert!(!identifies_reply(&text, "m-parent", "m-other"));
+            let proactive = format!("[Agent HUD · {name}; message_id=m-new]\nfixture");
+            assert!(identifies_header(&proactive, "message_id=m-new"));
+            assert!(!identifies_header(&proactive, "message_id=m-other"));
+        }
         assert!(!identifies_reply("queued", "m-parent", "m-reply"));
     }
 }

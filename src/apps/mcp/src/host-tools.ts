@@ -1,5 +1,8 @@
 // The host app's own tools, and the agent session that calls one.
-import type { StandardSchemaWithJSON } from "@modelcontextprotocol/server";
+import {
+  McpServer,
+  type StandardSchemaWithJSON,
+} from "@modelcontextprotocol/server";
 import { engine } from "./reply.ts";
 import { objectArguments } from "./schemas.ts";
 
@@ -57,3 +60,13 @@ export const caller = (meta: Record<string, unknown> | undefined) => {
     ? { client: "claude", sessionId: session, turnId: null }
     : null;
 };
+
+/** Direction hints are sent on initialize, including when the message group is off. */
+export const nativeServer = () =>
+  new McpServer(
+    { name: "agent-hud", version: "0.1.0" },
+    {
+      instructions:
+        "Local Agent HUD tools serve Codex/DSH/Claude on this computer. For chat messaging use list_sessions, send_message and get_message. Reply to a received Dot message using send_message with reply_to equal to its actual received ID. Dot-HUD hud_reply and hud_list_sessions are for the remote Dot, not this native messaging path. If messaging tools are missing, enable them in HUD Settings and reload this MCP server in the client; never substitute Dot-HUD tools.",
+    },
+  );

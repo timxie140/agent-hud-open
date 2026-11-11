@@ -138,6 +138,15 @@ class SessionTests(unittest.TestCase):
         self.assertIsNone(result['replyText'])
         self.assertEqual(result['messageText'], 'isolated marker')
 
+    def test_wrong_direction_reply_explains_native_route_without_mutating_or_resending(self):
+        sent = self.send()
+        before = self.adapter.receipt(sent['id'])
+        network_calls = len(self.transport.calls)
+        with self.assertRaisesRegex(hud.Rejected, 'local Agent HUD send_message'):
+            self.adapter.reply(sent['id'], 'wrong-direction reply')
+        self.assertEqual(self.adapter.receipt(sent['id']), before)
+        self.assertEqual(len(self.transport.calls), network_calls)
+
     def test_native_steer_feedback_is_separate_from_actual_receipt_and_does_not_ack_loop(self):
         sent = self.send()
         claim = receipts.claim(self.adapter, sent['id'])

@@ -44,7 +44,7 @@ impl Messaging {
             json!({"enabled":false})
         };
         if dot["enabled"] == true {
-            rows.push(json!({"id":agent_hud_platform::dot::SESSION,"client":"dot","title":"Luo",
+            rows.push(json!({"id":agent_hud_platform::dot::SESSION,"client":"dot","title":"Dot",
                 "project":null,"state":"idle","reachable":dot["ready"] == true && dot["subscribed"] == true,
                 "reason":dot["notice"],"self":false,"updatedAt":null}));
         }
