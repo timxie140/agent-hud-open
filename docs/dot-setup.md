@@ -66,8 +66,8 @@ Keychain 可能要求用户授权；拒绝后须由用户处理，程序不会�
 
 将以下说明发送到现有 Dot（只需要首次设置，或实际订阅失效需要恢复时）：
 
-> 请订阅 Dot-HUD 的 `hud.message.created`，arguments 为 `{"mailbox":"dot"}`。
-> 若工作区和订阅工具支持，请显式请求 `ttlMs: null`，保留无固定到期的订阅。
+> 请优先订阅 Dot-HUD 的 `hud.message.created`，arguments 为 `{"mailbox":"dot"}`。
+> 若当前工具不接受 dot，请报告实际支持的参数并询问，不要猜测、切换参数或重复订阅。
 > data.kind 为 `message` 时，先调用 `hud_ack_message`，id 使用
 > data.message_id；需要回复时调用一次 `hud_reply`，id 仍用原消息 ID。
 > `hud_reply` 的 accepted/queued 仅表示投递受理，不代表 Codex 实际收到。
@@ -79,8 +79,8 @@ Keychain 可能要求用户授权；拒绝后须由用户处理，程序不会�
 订阅由平台提供的签名 callback 绑定到真实接收聊天。HUD 验证 challenge、
 HTTPS、公网地址和签名；代理方式仍将 callback 固定到已验证公网 IP，TLS 校验
 原域名，不允许 Fake-IP/私有地址或重定向。回调 URL 和签名秘密不会出现在日志中。
-显式 `ttlMs:null` 才授予无固定到期；省略时仍默认一小时并由平台刷新。工作区策略
-或平台任务被停止时不能靠本机伪造恢复；HUD 会显示等待订阅，须在原 Dot 中恢复。
+订阅期限由平台与服务端协商，默认一小时并由平台刷新；普通提示词不要求指定到期参数。
+工作区策略撤销权限或平台任务被停止时不能靠本机伪造恢复；HUD 会显示等待订阅，须在原 Dot 中恢复。
 
 ### 取消平台订阅
 
@@ -96,6 +96,8 @@ HTTPS、公网地址和签名；代理方式仍将 callback 固定到已验证�
 [MCP Events 退订协议](https://developers.openai.com/plugins/build/mcp-events#stop-a-subscription)。
 
 ## 4. Codex 像给 DSH 一样发送
+
+DSH 通过本机原生 `send_message` 发给 Codex（包括 `reply_to` 回信）时，运行中的可验证 Desktop 聊天自动 steer，空闲或确认无 owner 时 queued；拒绝或不确定时不改走队列重发。
 
 使用 HUD 已有工具：
 

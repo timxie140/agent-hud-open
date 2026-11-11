@@ -91,7 +91,11 @@ impl Messaging {
             request_id: id.clone(),
             text: delivered.clone(),
             form,
-            operation: Operation::Enqueue,
+            operation: if caller.client == "deepseek" && client == "codex" {
+                Operation::SteerOrEnqueue
+            } else {
+                Operation::Enqueue
+            },
             expected_turn_id: None,
         });
         if let Ok(receipt) = &receipt {
