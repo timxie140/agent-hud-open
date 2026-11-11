@@ -313,9 +313,19 @@ pnpm run build:macos -- --bundle
 
 </details>
 
+## 连接 Dot
+
+通过 Mac 或 Windows 上的 Agent HUD，让 ChatGPT 中的 Dot 与 Codex 聊天收发消息。
+
+1. 打开 **设置 → 智能体 → Dot**，启用 Dot，填写 Tunnel ID 和仅开启 **Tunnels Read + Use** 的 Restricted Runtime API key，点击 **保存并连接**。
+2. 在 ChatGPT 打开 **插件 → ＋ → 添加自定义 MCP 服务器**。插件名使用 **Dot-HUD-Mac** 或 **Dot-HUD-Win**，连接方式选 **Tunnel**，选择同一个隧道，身份验证选 **无需身份验证**。添加并安装插件，在 Dot 中启用。
+3. 在 HUD 的“首次连接 Dot”中点击 **复制提示词**，发给 Dot。HUD 显示 **已连接** 后，设置即完成。
+
+Platform 入口、密钥权限、收发消息和停止连接的完整步骤见 [Dot连接指南](docs/Dot连接指南.md)。
+
 ## 文档
 
-[开发](docs/development.md) · [平台架构](docs/platform-architecture.md) · [平台构建](docs/platform-builds.md) · [账户](docs/accounts.md) · [客户端回调](docs/client-hooks.md) · [会话数据](docs/session-data.md) · [局域网协议](docs/local-network.md) · [性能](docs/performance.md) · [对齐清单](docs/parity/README.md) · [Tao 补丁](docs/tao-panel-patch.md) · [第三方来源](docs/third-party.md) · [贡献指南](CONTRIBUTING.md)
+[Dot连接指南](docs/Dot连接指南.md) · [开发](docs/development.md) · [平台架构](docs/platform-architecture.md) · [平台构建](docs/platform-builds.md) · [账户](docs/accounts.md) · [客户端回调](docs/client-hooks.md) · [会话数据](docs/session-data.md) · [局域网协议](docs/local-network.md) · [性能](docs/performance.md) · [对齐清单](docs/parity/README.md) · [Tao 补丁](docs/tao-panel-patch.md) · [第三方来源](docs/third-party.md) · [贡献指南](CONTRIBUTING.md)
 
 ## 许可证
 
@@ -330,28 +340,3 @@ pnpm run build:macos -- --bundle
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jazzenchen/agent-hud-open&type=date&legend=top-left" />
  </picture>
 </a>
-# 本分支的 Dot 接入
-
-在 **设置 → 智能体 → Dot** 首次填写 Tunnel ID、Restricted Runtime API key 和可选的本机代理，保存后自动连接。macOS 和 Windows 的完整构建包含所需运行端，后续开启“启用”即可使用已保存配置。
-
-- [Dot连接指南](docs/Dot连接指南.md)：Platform 隧道和 API key 入口、仅限 Tunnel Read + Use 的权限、完整步骤、可复制的订阅提示词、固定任务名、退订与工具刷新。
-- [Dot 技术说明](docs/dot-setup.md)：真实送达回执、机器与会话绑定、安全存储、构建及故障排查。
-
-连接隧道后，还须在已有 Dot 中启用插件并订阅事件；停止本机连接不会删除平台任务。HUD 验证真实收件输入后自动确认，无需手动调用确认工具。`dot:luo` 为兼容既有订阅保留的内部标识，与 Dot 的个人名字无关。
-
-## 第一次连接：从 Platform 到 ChatGPT 插件
-
-1. 打开 [OpenAI Platform 的 Tunnel 设置](https://platform.openai.com/settings/organization/tunnels)，选择正确组织，创建或选择这台机器专用的 Tunnel。核对它关联了目标 ChatGPT workspace，复制 Tunnel ID。
-2. 打开 [Runtime API keys](https://platform.openai.com/settings/organization/api-keys)，创建 **Restricted** 密钥，**仅启用 Tunnels 的 Read 和 Use**，其他权限保持 None，不给 Manage，不用 All 或 Admin API key。运行密钥所属账号也需要对应组织的 Read + Use 权限。
-3. 启动 **Agent HUD**，打开 **设置 → 智能体 → Dot**，打开“启用”，填写 Tunnel ID、运行密钥及必要的本机 HTTP 代理，点击“保存并连接”，等待“等待 Dot 订阅”。密钥仅在本机安全输入，不发送到聊天。
-4. **保持 HUD 开启、Dot 选项已启用且隧道已就绪**。在 ChatGPT 软件内（或网页版）点击 **插件 / Plugins**，再点击右上角 **添加 / ＋**，选择 **添加自定义 MCP 服务器 / Add custom MCP server**。
-5. 填写插件名：Mac 使用 **Dot-HUD-Mac**，Windows 使用 **Dot-HUD-Win**。
-6. 连接方式选择 **Tunnel**；等待隧道列表加载后，选择第 1 步创建、且与本机 HUD 相同的 Tunnel。若界面支持直接填写 ID，也可粘贴相同 ID。不要选另一台机器的隧道。
-7. **身份验证选择“无需身份验证 / No authentication”**。当前构建的 tunnel-client 会向本机 listener 注入受保护的认证；这里不填 Runtime API key，不额外配置 OAuth。
-8. 按界面提示完成检查，点击 **添加 / 创建插件（Create as a plugin）**；如果还需要安装，完成安装。保持 HUD 和本机代理继续运行，否则工具发现与调用会失败。
-9. 在**已有 Dot** 中启用刚添加的插件；在 HUD 的“首次连接 Dot”点击 **复制提示词**，发给这个 Dot。提示词会按本机平台自动填入 `Dot-HUD-Mac` / `Dot-HUD-Win`，并使用 `{"mailbox":"dot"}` 订阅。
-10. Dot 应复用已有事件任务；首次创建时使用固定名称 **Dot-HUD 通信 · Mac** 或 **Dot-HUD 通信 · Windows**。确认五项工具可用且 HUD 显示“已连接”，再按需进行一次消息测试。若平台不支持指定任务名，以 Dot 报告的实际名称为准。
-
-取消订阅时，到 ChatGPT 的 **Scheduled / 计划任务** 找到上述任务并**手动删除**；不要只清空事件列表。“停止连接”只停止本机通信，不删除平台任务。两台机器目前仍各用独立 Tunnel 和插件入口。完整提示词、状态解释、会话选择与故障排查见 [Dot连接指南](docs/Dot连接指南.md)。
-
-**工具方向**：`Dot-HUD-*` 的 `hud_reply` 是 Dot 回复 Codex，`hud_list_sessions` 只列 Codex。Codex 回复 Dot 主动消息，应使用本机 `agent-hud.send_message` 的 `reply_to`；找 DSH 应使用本机 `list_sessions`。已有聊天缺原生消息工具时，在客户端 **Settings → MCP servers → agent-hud** 刷新 / Restart，再回原聊天核对工具实际可调用；不能用 Dot 插件替代。详见 [工具方向与已有聊天重载](docs/Dot连接指南.md#10-分清-dot-插件与本机-hud不要反方向调用)。
