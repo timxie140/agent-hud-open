@@ -35,7 +35,7 @@ class PackageOutputTests(unittest.TestCase):
                 (framework / 'Versions/3.12/Python').write_text(revision)
                 try:
                     (framework / 'Versions/Current').symlink_to('3.12', target_is_directory=True)
-                    (framework / 'Python').symlink_to('Versions/Current/Python')
+                    (framework / 'Python').symlink_to(Path('Versions/Current/Python'))
                 except OSError:
                     self.skipTest('Host cannot create framework symlinks')
                 packager.replace_output(staged, output, root / ('backup-' + revision))

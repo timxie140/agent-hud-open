@@ -20,8 +20,9 @@ class SigningTests(unittest.TestCase):
             (source / 'Python.framework/Versions/3.12/Python').write_text('runtime')
             try:
                 (source / 'Python.framework/Versions/Current').symlink_to('3.12', target_is_directory=True)
-                (source / 'Python.framework/Python').symlink_to('Versions/Current/Python')
-                (source / 'Python.framework/Resources').symlink_to('Versions/Current/Resources', target_is_directory=True)
+                # Path emits native separators in Windows reparse-point targets.
+                (source / 'Python.framework/Python').symlink_to(Path('Versions/Current/Python'))
+                (source / 'Python.framework/Resources').symlink_to(Path('Versions/Current/Resources'), target_is_directory=True)
             except OSError:
                 self.skipTest('Host cannot create framework symlinks')
             app = root / 'Agent HUD.app'
