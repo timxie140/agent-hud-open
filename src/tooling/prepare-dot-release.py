@@ -10,7 +10,7 @@ import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
-VERSION = '0.6.1-dot.1'
+VERSION = '0.6.1-dot.2'
 
 
 def fail(message):

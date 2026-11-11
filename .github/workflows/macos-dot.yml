@@ -49,7 +49,11 @@ jobs:
           RUST_TEST_THREADS: '2'
         run: cargo test --workspace --locked --no-fail-fast
       - name: Build macOS application and disk image
+        env:
+          APPLE_SIGNING_IDENTITY: '-'
         run: pnpm run build:macos -- --bundle
+      - name: Verify the complete testing bundle signature
+        run: codesign --verify --deep --strict "target/release/bundle/macos/Agent HUD.app"
       - name: Smoke check runtime inside the complete macOS app
         run: |
           smoke_data="$(mktemp -d)"
@@ -61,7 +65,20 @@ jobs:
           ditto -c -k --keepParent "target/release/bundle/macos/Agent HUD.app" "dot-release/Agent-HUD-macOS-$(uname -m).zip"
           cp target/release/bundle/dmg/*.dmg dot-release/
           cp docs/dot-setup.md dot-release/
-          python3 -c 'import json,os,platform; from pathlib import Path; Path("dot-release/provenance.json").write_text(json.dumps({"revision":os.environ["GITHUB_SHA"],"platform":"macOS","architecture":platform.machine(),"signed":False,"run":os.environ["GITHUB_SERVER_URL"]+"/"+os.environ["GITHUB_REPOSITORY"]+"/actions/runs/"+os.environ["GITHUB_RUN_ID"]},indent=2))'
+          python3 - <<'PY'
+          import json, os, platform
+          from pathlib import Path
+          signature = json.loads(Path('target/release/bundle/dmg/local-signature.json').read_text())
+          assert signature['identityType'] == 'Ad hoc' and signature['strictDeepVerified'] is True
+          Path('dot-release/provenance.json').write_text(json.dumps({
+              'revision': os.environ['GITHUB_SHA'], 'platform': 'macOS',
+              'architecture': platform.machine(), 'signed': False,
+              'signatureKind': 'ad-hoc', 'notarized': signature['notarized'],
+              'strictDeepVerified': signature['strictDeepVerified'],
+              'run': os.environ['GITHUB_SERVER_URL'] + '/' + os.environ['GITHUB_REPOSITORY']
+                     + '/actions/runs/' + os.environ['GITHUB_RUN_ID'],
+          }, indent=2))
+          PY
           shasum -a 256 dot-release/*.zip dot-release/*.dmg > dot-release/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:

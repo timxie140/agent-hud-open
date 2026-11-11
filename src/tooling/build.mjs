@@ -90,7 +90,13 @@ export function buildPlan(options, env = process.env, host = process.platform) {
     /^(Apple Development|Mac Developer):/.test(
       env.APPLE_SIGNING_IDENTITY?.trim() || "",
     );
-  if (personalMacBundle) args.push("--no-sign", "--bundles", "app");
+  const adHocMacBundle =
+    options.component === "desktop" &&
+    options.platform === "macos" &&
+    options.bundle &&
+    env.APPLE_SIGNING_IDENTITY?.trim() === "-";
+  if (personalMacBundle || adHocMacBundle)
+    args.push("--no-sign", "--bundles", "app");
   const commands = [
     {
       command,
@@ -99,7 +105,7 @@ export function buildPlan(options, env = process.env, host = process.platform) {
       shell: host === "win32" && command === "pnpm",
     },
   ];
-  if (personalMacBundle) {
+  if (personalMacBundle || adHocMacBundle) {
     const target = resolve(root, env.CARGO_TARGET_DIR || "target");
     const bundle = resolve(
       target,
@@ -116,6 +122,7 @@ export function buildPlan(options, env = process.env, host = process.platform) {
         resolve(bundle, "dmg"),
         "--dot-resources",
         resolve(root, "src/apps/desktop/src-tauri/resources/dot"),
+        ...(adHocMacBundle ? ["--ad-hoc"] : []),
       ],
       cwd: root,
       shell: false,

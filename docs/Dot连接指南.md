@@ -22,7 +22,7 @@
 
 ## 2. 在 HUD 连接
 
-1. 安装并启动包含 Dot 功能的 Agent HUD。
+1. 下载并启动[包含 Dot 功能的 Agent HUD](https://github.com/timxie140/agent-hud-open/releases/latest)。
 2. 打开 **设置 → 智能体 → Dot**，开启“启用”。
 3. 填入刚才的 **Tunnel ID** 和 **Runtime API key**。
 4. 如果使用本机 HTTP 代理，填写代理地址，例如 `http://127.0.0.1:7890`；不使用代理时留空。
