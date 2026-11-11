@@ -180,6 +180,8 @@ Pause 按钮存在，但它是否立即触发退订未完成同等验收；若�
 | Codex 回复自己收到的 Dot 主动消息 | **本机原生 `agent-hud` MCP** | `send_message({"reply_to":"实际收到的消息 ID","text":"回复内容"})` |
 | Codex / DSH 查伙伴、派单和读取回信 | **本机原生 `agent-hud` MCP** | `list_sessions`、`send_message`、`get_message` |
 
+原生 DSH → Codex 的主动消息与回复同样使用自动策略：可验证的 Codex Desktop 正在运行时 steer，空闲或确认无 owner 时 queued；拒绝或不确定时不会换路重发。其他原生消息保持原有队列策略。
+
 Dot 插件的 `hud_list_sessions` 当前只列 Codex，不列 DSH。原生 `list_sessions` 才是查找 DSH 伙伴的通信清单；其中 reachable / idle 是 HUD 的即时报告，不能代替伙伴真实作业清单，也不能保证没有后台任务。
 
 Dot 插件的 `hud_reply` 只接收 `origin=codex` 的原消息。Codex 不能拿 `origin=dot` 的主动消息 ID 调用它来回复 Dot。出现方向错误时，保留原消息，不改 ID、不换账号、不重发；应先找回本机原生工具。

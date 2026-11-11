@@ -215,8 +215,8 @@ pub fn deepseek_no_start(zh: bool) -> String {
 pub fn codex_open(zh: bool) -> String {
     say(
         zh,
-        "Codex 正开着这个对话，空闲时就会把消息当作新的一轮。",
-        "Codex has this thread open; it takes the message as a new turn once idle.",
+        "Codex 正开着这个对话，可以接收消息。",
+        "Codex has this thread open and can receive messages.",
     )
 }
 pub fn codex_wakes(zh: bool) -> String {
@@ -249,8 +249,8 @@ pub fn antigravity_waits(zh: bool) -> String {
 }
 pub fn replied(zh: bool, reply: &str) -> String {
     if zh {
-        format!("对方用消息 {reply} 回复了；这条回复会在你空闲时作为新的一轮送到你的会话。")
+        format!("对方用消息 {reply} 回复了；这条回复将按接收客户端的投递策略送达。")
     } else {
-        format!("They answered with message {reply}; it comes to your session as a new turn once you are idle.")
+        format!("They answered with message {reply}; it follows the receiving client's delivery policy.")
     }
 }

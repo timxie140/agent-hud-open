@@ -5,6 +5,8 @@
 use super::*;
 #[path = "dot_tests.rs"]
 mod dot_tests;
+#[path = "native_policy_tests.rs"]
+mod native_policy_tests;
 use agent_hud_core::conversation_feed::{Batch, Fact, Item, Kind as FeedKind, Role};
 use agent_hud_platform::delivery::{
     fixtures::{StartFixture, SESSION as STARTED},

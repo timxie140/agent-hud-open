@@ -2,7 +2,8 @@
 // read other Claude Code, Codex, Antigravity and DeepSeek Harness sessions on
 // this computer through Agent HUD's MCP server. Off unless turned on. While
 // on: "Send as me", and how many passes in a row before the user takes a
-// look. A message waits until its session is idle; it never interrupts a turn.
+// look. DSH → Codex steers an active Desktop turn or queues while idle;
+// other native message routes retain their queue policy.
 import { useState } from "react";
 import { toast } from "sonner";
 import type { Snapshot } from "@agent-hud/protocol";
