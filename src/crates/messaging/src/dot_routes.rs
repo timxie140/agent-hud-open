@@ -30,7 +30,7 @@ impl Messaging {
         let recipient = Party {
             client: "dot".into(),
             session_id: dot::SESSION.into(),
-            title: Some("Luo".into()),
+            title: Some("Dot".into()),
         };
         let left = chain
             .as_deref()
@@ -87,7 +87,7 @@ impl Messaging {
             json!({"id":message.id,
             "source":format!("codex:{}",message.from.session_id)}),
         )?;
-        value["to"] = json!({"client":"dot","sessionId":dot::SESSION,"title":"Luo"});
+        value["to"] = json!({"client":"dot","sessionId":dot::SESSION,"title":"Dot"});
         value["reply"] = value["replyId"].clone();
         value["answer"] = value["replyText"].clone();
         value["actualReceiptConfirmed"] = value["recipientConfirmed"].clone();

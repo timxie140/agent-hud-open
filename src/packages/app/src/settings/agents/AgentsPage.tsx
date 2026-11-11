@@ -118,6 +118,7 @@ export default function AgentsPage({
             <DotDetail
               t={t}
               status={dot}
+              platform={snapshot.connection.system?.platform}
               refresh={readDot}
               save={async (arguments_) => {
                 const next = await invoke<DotStatus>("native_dot", {

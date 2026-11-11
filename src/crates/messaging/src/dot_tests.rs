@@ -176,7 +176,7 @@ fn proactive_dot_selects_existing_codex_without_a_fake_mcp_caller_and_confirms_a
     assert_eq!(sends[0].operation, Operation::SteerOrEnqueue);
     assert!(sends[0]
         .text
-        .starts_with("[Agent HUD · Dot Luo; message_id=m-proactive-fixture]"));
+        .starts_with("[Agent HUD · Dot; message_id=m-proactive-fixture]"));
     assert!(!sends[0].text.contains("delivery_challenge"));
     assert!(!sends[0].text.contains("confirm_delivery"));
     drop(sends);

@@ -1,4 +1,4 @@
-"""Private HUD/Luo MCP Events adapter. Importing this module starts nothing.
+"""Private HUD/Dot MCP Events adapter. Importing this module starts nothing.
 
 Run only after the local HTTP endpoint and plugin connection are authorized.
 No Bridge dependency. Platform-created subscriptions bind the receiving chat.
@@ -33,6 +33,7 @@ import uuid
 _data_home = Path.home() / 'Library/Application Support' if sys.platform == 'darwin' else Path(os.environ.get('LOCALAPPDATA', str(Path.home())))
 ROOT = Path(os.environ.get('AGENTHUD_DOT_DATA', str(_data_home / 'AgentHUDPrivate' / 'dot-client')))
 EVENT = 'hud.message.created'
+# Legacy wire identity, unrelated to the user's Dot display name. Keep existing subscriptions.
 MAILBOX = 'luo'
 LIMIT = 256 * 1024
 ADAPTER_VERSION = '0.3.0'
@@ -337,13 +338,13 @@ class Adapter:
 
     def _mailbox(self, arguments):
         if arguments != {'mailbox': MAILBOX}:
-            raise Rejected('Only the explicitly configured Luo mailbox is available', reason='invalid_mailbox')
+            raise Rejected('Only the explicitly configured Dot mailbox is available', reason='invalid_mailbox')
 
     def _subscription(self):
         with self.db() as db:
             row = db.execute('SELECT * FROM subscriptions WHERE mailbox=?', (MAILBOX,)).fetchone()
         if not self._active_subscription(row):
-            raise Rejected('Luo has no active verified subscription')
+            raise Rejected('Dot has no active verified subscription')
         return row
 
     def _active_subscription(self, row):
@@ -366,7 +367,7 @@ class Adapter:
         with self.db() as db:
             existing = db.execute('SELECT * FROM subscriptions WHERE mailbox=?', (MAILBOX,)).fetchone()
         if existing and existing['id'] != sub_id and self._active_subscription(existing):
-            raise Rejected('Luo mailbox already bound; unsubscribe the existing chat first', reason='mailbox_already_bound')
+            raise Rejected('Dot mailbox already bound; unsubscribe the existing chat first', reason='mailbox_already_bound')
         ttl = params.get('ttlMs', 3600000)
         if ttl is None:
             # Grant no expiration only when the authenticated platform explicitly
@@ -405,7 +406,7 @@ class Adapter:
             # UNIQUE mailbox prevents a second concurrent callback from taking over.
             current = db.execute('SELECT id,expires FROM subscriptions WHERE mailbox=?', (MAILBOX,)).fetchone()
             if current and current['id'] != sub_id and self._active_subscription(current):
-                raise Rejected('Luo mailbox binding changed during verification')
+                raise Rejected('Dot mailbox binding changed during verification')
             db.execute('INSERT OR REPLACE INTO subscriptions VALUES(?,?,?,?,?)',
                        (sub_id, MAILBOX, url, self.encrypt(key), expires))
         return {'id': sub_id, 'refreshBefore': timestamp(expires) if expires is not None else None, 'cursor': None, 'truncated': False}
@@ -537,7 +538,7 @@ class Adapter:
                 raise Rejected('Dot connection required')
             fields = {x: {'type': 'string'} for x in ['mailbox', 'message_id', 'source', 'text', 'kind']}
             fields['kind']['enum'] = ['message', 'delivery_receipt']
-            return {'events': [{'name': EVENT, 'description': 'A new HUD message addressed to Luo.',
+            return {'events': [{'name': EVENT, 'description': 'A new HUD message addressed to Dot.',
                     'delivery': ['webhook'], 'inputSchema': {'type': 'object',
                     'properties': {'mailbox': {'type': 'string', 'enum': [MAILBOX]}},
                     'required': ['mailbox'], 'additionalProperties': False},
@@ -554,8 +555,8 @@ class Adapter:
                            ('hud_reply', ['id', 'text'], 'Reply once. transportState reports native queued/steered/started, or pending_hud while awaiting HUD. Never resend on pending/uncertain; recipientConfirmed is separate. Await delivery_receipt or query hud_get_delivery_status.'),
                            ('hud_get_delivery_status', ['id'], 'Read whether the actual recipient confirmed your reply. Read-only; never acknowledges delivery.')]
             if role == 'local':
-                definitions = [('hud_dot_status', [], 'Check whether Luo has a verified event subscription.'),
-                               ('hud_send_to_dot', ['id', 'text'], 'Send one HUD message to subscribed Luo.'),
+                definitions = [('hud_dot_status', [], 'Check whether Dot has a verified event subscription.'),
+                               ('hud_send_to_dot', ['id', 'text'], 'Send one HUD message to subscribed Dot.'),
                                ('hud_get_message', ['id'], 'Read a message receipt; this is not an actual chat input.')]
             return {'tools': [{'name': name, 'description': description, 'inputSchema': {
                 'type': 'object', 'properties': {x: {'type': 'string'} for x in fields},

@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { dotConnectionLabel } from "@agent-hud/hud/dot-status";
+import { DotSetup } from "./DotSetup";
 import { CircleDot, RefreshCw } from "lucide-react";
 import { Button } from "@agent-hud/ui/components/button";
 import { ToggleRow } from "../SettingsControls";
@@ -13,17 +15,17 @@ export interface DotStatus {
   ready: boolean;
   subscribed: boolean;
   notice?: string | null;
-  confirmedReplies?: number;
-  lastConfirmedAt?: string | null;
 }
 
 export function DotDetail({
   status,
+  platform,
   save,
   refresh,
   t,
 }: {
   status: DotStatus;
+  platform?: string;
   save: (arguments_: Record<string, unknown>) => Promise<void>;
   refresh: () => Promise<void>;
   t: Text;
@@ -67,15 +69,7 @@ export function DotDetail({
       setPending(null);
     }
   };
-  const connection = !status.enabled
-    ? t("Off", "已关闭")
-    : !status.running
-      ? t("Starting", "正在启动")
-      : !status.ready
-        ? t("Connecting tunnel", "正在连接隧道")
-        : !status.subscribed
-          ? t("Waiting for Luo's subscription", "等待 Luo 订阅")
-          : t("Connected to Luo", "已连接 Luo");
+  const connection = dotConnectionLabel(status, t("en", "zh") as "en" | "zh");
   return (
     <Page>
       <div className="dot-heading">
@@ -124,16 +118,7 @@ export function DotDetail({
           <span role="status">{connection}</span>
         </Row>
         <Row title={t("Recipient", "收件人")}>
-          <span>Luo · dot:luo</span>
-        </Row>
-        <Row
-          title={t("Recipient-confirmed replies", "已获收件人确认的回信")}
-          subtitle={
-            status.lastConfirmedAt ??
-            t("No actual delivery confirmation yet", "尚无实际送达确认")
-          }
-        >
-          <span>{status.confirmedReplies ?? 0}</span>
+          <span>Dot</span>
         </Row>
       </Section>
       <Section
@@ -216,35 +201,7 @@ export function DotDetail({
         </div>
       </Section>
       {status.notice && <Notice>{status.notice}</Notice>}
-      <Section
-        title={t("Connect your Dot once", "首次连接 Dot")}
-        footer={t(
-          "See README → Dot setup for the exact subscription instructions and delivery receipt rules.",
-          "详见 README 的 Dot 接入教程：订阅参数、真实送达回执及故障排查。",
-        )}
-      >
-        <Row
-          title={t("1. Add the Dot-HUD plugin", "1. 添加 Dot-HUD 插件")}
-          subtitle={t(
-            "In ChatGPT, add a custom MCP server using this tunnel and enable it for the existing Luo.",
-            "在 ChatGPT 添加使用此隧道的自定义 MCP 插件，并在既有 Luo 中启用。",
-          )}
-        />
-        <Row
-          title={t(
-            "2. Subscribe to hud.message.created",
-            "2. 订阅 hud.message.created",
-          )}
-          subtitle={'arguments: {"mailbox":"luo"}'}
-        />
-        <Row
-          title={t("3. Keep receipts separate", "3. 区分送达回执")}
-          subtitle={t(
-            "Reply once to a message; record delivery_receipt without replying or acknowledging it.",
-            "普通消息可回复一次；delivery_receipt 只记录，不回复、不再确认，避免循环。",
-          )}
-        />
-      </Section>
+      <DotSetup t={t} platform={platform} />
     </Page>
   );
 }

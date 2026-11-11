@@ -75,11 +75,11 @@ impl Messaging {
         };
         let header = if let Some(parent) = &binding.parent {
             format!(
-                "[Agent HUD · Dot Luo; reply_to={}; reply_id={delivery_id}]",
+                "[Agent HUD · Dot; reply_to={}; reply_id={delivery_id}]",
                 parent.id
             )
         } else {
-            format!("[Agent HUD · Dot Luo; message_id={delivery_id}]")
+            format!("[Agent HUD · Dot; message_id={delivery_id}]")
         };
         let delivered = format!("{header}\n{text}");
         let receipt = self.clients.send(SendRequest {
@@ -111,7 +111,7 @@ impl Messaging {
         let sender = Party {
             client: "dot".into(),
             session_id: dot::SESSION.into(),
-            title: Some("Luo".into()),
+            title: Some("Dot".into()),
         };
         let chain = binding
             .parent
