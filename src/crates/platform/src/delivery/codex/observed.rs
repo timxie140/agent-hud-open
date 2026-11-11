@@ -7,16 +7,12 @@ use sha2::{Digest, Sha256};
 /// Only the native adapter (or isolated fixture feature) can construct this proof.
 pub struct ReceivedInput {
     pub(super) thread: String,
-    pub(super) request: String,
     pub(super) turn: String,
     pub(super) text: String,
 }
 impl ReceivedInput {
     pub fn thread(&self) -> &str {
         &self.thread
-    }
-    pub fn request(&self) -> &str {
-        &self.request
     }
     pub fn turn(&self) -> &str {
         &self.turn
@@ -86,7 +82,16 @@ pub(super) fn recorded(
                 Some("steeringUserMessage") if item["status"] == "accepted" => &item["input"],
                 _ => continue,
             };
-            if item["id"] != expected && item["clientUserMessageId"] != expected {
+            // Canonical Codex items may replace the client ID with a native
+            // item ID. Exact text is still receiving-input evidence; an
+            // explicit conflicting client identity is never accepted.
+            if item
+                .get("clientUserMessageId")
+                .is_some_and(|id| !id.is_null() && id != &expected)
+                || item["id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("agent-hud:") && id != expected)
+            {
                 continue;
             }
             let Some(parts) = content
@@ -106,7 +111,6 @@ pub(super) fn recorded(
             }
             found = Some(ReceivedInput {
                 thread: thread.into(),
-                request: request.into(),
                 turn: turn_id.into(),
                 text: text.into(),
             });
@@ -134,10 +138,9 @@ pub(super) fn observe(
 }
 
 #[cfg(any(test, feature = "fixtures"))]
-pub fn fixture(thread: &str, request: &str, turn: &str, text: &str) -> ReceivedInput {
+pub fn fixture(thread: &str, turn: &str, text: &str) -> ReceivedInput {
     ReceivedInput {
         thread: thread.into(),
-        request: request.into(),
         turn: turn.into(),
         text: text.into(),
     }

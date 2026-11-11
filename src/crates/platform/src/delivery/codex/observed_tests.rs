@@ -22,6 +22,19 @@ fn canonical_input_is_bound_to_both_native_request_and_content() {
     assert!(recorded(&state, THREAD, "m-fixture", "wrong-fingerprint").is_none());
 }
 #[test]
+fn canonical_native_ids_may_replace_client_ids_but_conflicting_ids_are_refused() {
+    let mut value = state();
+    value["turnHistory"]["history"]["entitiesByKey"]["k"]["items"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("clientUserMessageId");
+    assert!(recorded(&value, THREAD, "m-fixture", &hash()).is_some());
+    assert!(recorded(&value, THREAD, "m-fixture", "wrong-fingerprint").is_none());
+    value["turnHistory"]["history"]["entitiesByKey"]["k"]["items"][0]["id"] =
+        json!("agent-hud:m-other");
+    assert!(recorded(&value, THREAD, "m-fixture", &hash()).is_none());
+}
+#[test]
 fn queued_optimistic_unknown_and_ambiguous_states_are_not_receipt_proof() {
     let original = state();
     let turn = original["turnHistory"]["history"]["entitiesByKey"]["k"].clone();

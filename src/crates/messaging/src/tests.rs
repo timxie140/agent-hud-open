@@ -65,7 +65,6 @@ impl CodexTransport for Codex {
             .map(|r| {
                 delivery::received_input_fixture(
                     target.thread_id.as_deref().unwrap(),
-                    request,
                     "received-turn",
                     &r.text,
                 )

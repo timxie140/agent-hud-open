@@ -19,10 +19,15 @@ impl Messaging {
                 continue;
             };
             if input.thread() != message.to.session_id
-                || input.request() != message.id
                 || input.turn().is_empty()
                 || transcript::fingerprint(input.text()) != message.fingerprint
             {
+                continue;
+            }
+            let Some(parent) = message.reply_to.as_deref() else {
+                continue;
+            };
+            if !identifies_reply(input.text(), parent, &message.id) {
                 continue;
             }
             let Some(challenge) = receipt_challenge(input.text(), &message.id) else {
@@ -49,6 +54,11 @@ impl Messaging {
     }
 }
 
+fn identifies_reply(text: &str, parent: &str, id: &str) -> bool {
+    text.lines().next()
+        == Some(format!("[Agent HUD · Dot Luo; reply_to={parent}; reply_id={id}]").as_str())
+}
+
 fn receipt_challenge<'a>(text: &'a str, id: &str) -> Option<&'a str> {
     let prefix = format!("[Agent HUD delivery receipt: only after actually receiving this input, call confirm_delivery with id {id} and delivery_challenge ");
     let footer = text.lines().last()?.strip_prefix(&prefix)?;
@@ -59,4 +69,17 @@ fn receipt_challenge<'a>(text: &'a str, id: &str) -> Option<&'a str> {
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'))
     .then_some(challenge)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn actual_input_must_identify_both_reply_and_original_request() {
+        let text = "[Agent HUD · Dot Luo; reply_to=m-parent; reply_id=m-reply]\nACK isolated";
+        assert!(identifies_reply(text, "m-parent", "m-reply"));
+        assert!(!identifies_reply(text, "m-other", "m-reply"));
+        assert!(!identifies_reply(text, "m-parent", "m-other"));
+        assert!(!identifies_reply("queued", "m-parent", "m-reply"));
+    }
 }

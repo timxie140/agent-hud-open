@@ -273,3 +273,23 @@ fn detected_clients_without_readings_keep_their_marks_and_unknown_meter() {
         assert_eq!(selected[0].key, "openai");
     }
 }
+
+#[test]
+fn dot_connection_labels_match_the_webview_and_native_window_measurements() {
+    let mut snapshot = json!({"language":"en","quotas":[],"billing":[],"sessions":[],
+        "providers":[{"id":"dot","detected":true,"enabled":true}],
+        "connection":{"dot":{"enabled":true,"running":true,"ready":true,"subscribed":true}}});
+    for (language, label) in [("en", "Connected to Luo"), ("zh", "已连接 Luo")] {
+        snapshot["language"] = json!(language);
+        let rows = vendors(&snapshot, "simple", 0);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "Dot");
+        assert_eq!(meter_label(&rows[0], false), label);
+        assert!(rows[0].used.is_none() && rows[0].balance.is_none());
+    }
+    snapshot["connection"]["dot"]["subscribed"] = json!(false);
+    assert_eq!(
+        meter_label(&vendors(&snapshot, "simple", 0)[0], false),
+        "等待订阅"
+    );
+}
