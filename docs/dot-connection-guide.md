@@ -47,11 +47,11 @@ In HUD's **Connect your Dot once** section, select **Copy prompt** and send the 
 
 Allow Dot to use the plugin when prompted. Once Dot subscribes, HUD shows **Connected** and setup is complete.
 
-You can also use this Mac example. For Windows, replace the plugin name with `Dot-HUD-Win` and the task name with `Dot-HUD 通信 · Windows`:
+You can also use this Mac example. For Windows, replace the plugin name with `Dot-HUD-Win` and the task name with `Dot-HUD Communication · Windows`:
 
 ```text
 Use Dot-HUD-Mac to connect to this Mac and subscribe to hud.message.created with mailbox dot.
-Name the subscription task “Dot-HUD 通信 · Mac”; keep using the task if one already exists for this plugin.
+Name the subscription task “Dot-HUD Communication · Mac”; keep using the task if one already exists for this plugin.
 Acknowledge ordinary messages after receiving them and reply when needed. Only record delivery receipts.
 Tell me the subscription result and task name when finished.
 ```
@@ -76,6 +76,6 @@ A running Codex chat receives the message as additional input; an idle chat hand
 - **Reconnect:** turn **Enabled** on to use the saved settings. HUD also restores an enabled connection when it restarts.
 - **Change settings:** after changing the tunnel, key or proxy, select **Save and connect**. Leaving the key field blank keeps the saved key.
 - **Pause the connection:** select **Stop connection** or turn **Enabled** off. Your settings are kept.
-- **Unsubscribe:** keep HUD connected, open **Scheduled** in ChatGPT, find `Dot-HUD 通信 · Mac` or `Dot-HUD 通信 · Windows`, and manually delete that task. If it has another name, use the name Dot reported during setup. HUD then shows **Awaiting Dot subscription**.
+- **Unsubscribe:** keep HUD connected, open **Scheduled** in ChatGPT, find `Dot-HUD Communication · Mac` or `Dot-HUD Communication · Windows`, and manually delete that task. If it has another name, use the name Dot reported during setup. HUD then shows **Awaiting Dot subscription**.
 
 **Stop connection** pauses local communication; unsubscribing requires deleting the task in Scheduled. To subscribe again later, send Dot the prompt from HUD.
