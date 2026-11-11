@@ -100,14 +100,14 @@ HUD 的“首次连接 Dot”提供 **复制提示词** 按钮，自动按本机
 ```text
 请在这个已有 Dot 会话中使用已安装的 Dot-HUD-Mac 插件。先核对入口，只读调用 hud_list_sessions 确认机器；如果入口名称不同，请让我指出正确入口，不要选另一台机器。
 
-订阅 hud.message.created，arguments 为 {"mailbox":"luo"}。若已有该入口的事件任务，请核对并复用，不要重复订阅。首次创建任务时固定命名为“Dot-HUD 通信 · Mac”；已有任务若支持改名，也使用此名称。若平台不支持命名，请报告实际任务名。支持时显式请求 ttlMs: null。
+订阅 hud.message.created，arguments 为 {"mailbox":"dot"}。若已有该入口的事件任务，请核对并复用，不要重复订阅。首次创建任务时固定命名为“Dot-HUD 通信 · Mac”；已有任务若支持改名，也使用此名称。若平台不支持命名，请报告实际任务名。支持时显式请求 ttlMs: null。
 
 data.kind=message 时，实际收到事件后用 data.message_id 调用 hud_ack_message；需要回复时用同一 ID 调用一次 hud_reply。data.kind=delivery_receipt 时只记录，不 ACK、不回复。queued/steered 仅表示受理，不代表实际送达；可只读查询 hud_get_delivery_status，等待 recipientConfirmed=true。pending、refused 或 uncertain 时不要自动重发。
 
 设置期间不要发送测试消息。完成后报告已核对的机器、订阅结果和实际任务名。以后需要取消订阅时，提醒我到 Scheduled 手动删除此任务；本机 HUD 的“停止连接”不会删除平台任务。
 ```
 
-`mailbox: "luo"`、`dot:luo` 是初版沿用至今的**协议标识**，不是你的 Dot 必须使用的名字。无论你的 Dot 叫什么，当前参数都保持原样；改成个人名字会被拒绝，也可能让旧订阅失配。
+新订阅统一使用 `mailbox: "dot"`。旧任务的 `mailbox: "luo"` 仍作为兼容别名接受，与 `dot` 指向同一个收件人，不会生成第二个邮箱；已有任务无需为改名重新订阅。`dot:luo` 是仍保留兼容的本机消息路由 ID，不是个人名字。
 
 订阅由平台生成并验证 callback 绑定到真实接收会话，不需要用户复制回调地址或签名秘密。省略 `ttlMs` 时，HUD 默认授予一小时并接受平台刷新；只有平台显式请求且 HUD 授予 `ttlMs: null`，才是无固定到期。工作区策略仍可撤销任务或权限。
 
@@ -170,3 +170,27 @@ Pause 按钮存在，但它是否立即触发退订未完成同等验收；若�
 插件目录刷新、Dot 加载工具、事件订阅、实际消息收件是四件不同的事，需要分别核对。无需为了升级创建替代 Dot 会话或重复 MCP 入口。
 
 本指南描述当前已实现的一台 HUD 对应一个入口的方案；Dev / Relay 聚合部署尚未包含在此配置流程中。构建、安全存储、运行数据和回执机制详见 [Dot 技术说明](dot-setup.md)。
+
+## 10. 分清 Dot 插件与本机 HUD：不要反方向调用
+
+| 谁在操作 | 使用的入口 | 正确工具 |
+| --- | --- | --- |
+| Dot 选择一个 Codex 聊天并发消息 | ChatGPT 的 `Dot-HUD-Mac` / `Dot-HUD-Win` 插件 | `hud_list_sessions` → `hud_send_message` |
+| Dot 回复自己收到的 Codex 消息事件 | 同一个 Dot 插件 | `hud_ack_message`、`hud_reply` |
+| Codex 回复自己收到的 Dot 主动消息 | **本机原生 `agent-hud` MCP** | `send_message({"reply_to":"实际收到的消息 ID","text":"回复内容"})` |
+| Codex / DSH 查伙伴、派单和读取回信 | **本机原生 `agent-hud` MCP** | `list_sessions`、`send_message`、`get_message` |
+
+Dot 插件的 `hud_list_sessions` 当前只列 Codex，不列 DSH。原生 `list_sessions` 才是查找 DSH 伙伴的通信清单；其中 reachable / idle 是 HUD 的即时报告，不能代替伙伴真实作业清单，也不能保证没有后台任务。
+
+Dot 插件的 `hud_reply` 只接收 `origin=codex` 的原消息。Codex 不能拿 `origin=dot` 的主动消息 ID 调用它来回复 Dot。出现方向错误时，保留原消息，不改 ID、不换账号、不重发；应先找回本机原生工具。
+
+### 已有 Codex 聊天缺少原生消息工具
+
+1. 在 **HUD → 设置 → 智能体插件** 检查目标 Codex 的 HUD 工具和智能体消息权限；由用户允许必要权限，不靠 Dot 插件绕过。
+2. 保持 HUD 运行，在 Codex 所在客户端打开 **Settings → MCP servers**，选择已有的 **agent-hud**，使用该连接的 **Refresh tools / Restart / Reconnect**（以当前客户端提供的控件为准）。官方桌面 MCP 设置流程提供保存后 **Restart**；不要创建同名的第二个服务器。
+3. 回到**原聊天**，核对模型实际可以调用 `list_sessions`、`send_message`、`get_message`（原生目录还可能提供 `start_session`，本流程不需要调用它）。不要仅凭另开一条临时 MCP 连接看到了工具，就声称原聊天已经更新。
+4. 若该客户端没有连接级刷新入口，或刷新后仍缺失，停止相关派单并报告目录缺失，由用户安排客户端重载。保留原聊天；不能通过创建替代聊天或改用 Dot 的 `hud_reply` 来掩盖缺失。
+
+原生 HUD MCP 已在运行时轮询工具组变化并通过 SDK 的 `notifications/tools/list_changed` 通知客户端；自动化测试覆盖工具增加、替换、移除及通知。服务器通知存在，不代表每个客户端、每条已有聊天都一定实时采用新目录；本机测试和远端测试必须分别核对。
+
+官方参考：[Codex MCP 桌面配置与 Restart](https://learn.chatgpt.com/docs/extend/mcp#configure-in-the-chatgpt-desktop-app)。

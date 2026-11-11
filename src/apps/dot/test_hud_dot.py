@@ -73,6 +73,34 @@ class EventTests(unittest.TestCase):
         self.assertNotIn('secret', result)
         self.assertNotIn('callback', result)
 
+    def test_new_dot_mailbox_refreshes_legacy_binding_without_duplicate_recipient(self):
+        legacy = self.subscribe()
+        modern = self.subscription(arguments={'mailbox': 'dot'})
+        current = self.adapter.subscribe(modern)
+        self.assertEqual(current['id'], legacy['id'])
+        self.send()
+        event = self.transport.calls[-1][1]
+        self.assertEqual(event['data']['mailbox'], 'dot')
+        with self.adapter.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM subscriptions').fetchone()[0], 1)
+        other = self.subscription('https://callback.example.test/other', arguments={'mailbox': 'dot'})
+        with self.assertRaises(hud.Rejected):
+            self.adapter.subscribe(other)
+        # An old task's original unsubscribe still locates the same callback.
+        self.adapter.unsubscribe(self.subscription())
+        with self.assertRaises(hud.Rejected):
+            self.adapter._subscription()
+
+    def test_new_dot_and_legacy_filters_each_keep_their_own_payload_spelling(self):
+        for mailbox in ['dot', 'luo']:
+            request = self.subscription(arguments={'mailbox': mailbox})
+            self.adapter.subscribe(request)
+            self.send(message='m-mailbox-' + mailbox)
+            self.assertEqual(self.transport.calls[-1][1]['data']['mailbox'], mailbox)
+            self.adapter.unsubscribe(request)
+        with self.assertRaises(hud.Rejected):
+            self.adapter.subscribe(self.subscription(arguments={'mailbox': 'someone-else'}))
+
     def test_secret_is_protected_at_rest(self):
         self.subscribe()
         with self.adapter.db() as db:

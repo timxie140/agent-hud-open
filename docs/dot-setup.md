@@ -6,7 +6,7 @@ Dot 是 HUD 中独立的通信客户端，不能当作 Codex 会话或用一个�
 
 首次使用请先阅读[Dot连接指南](Dot连接指南.md)，其中包含 Platform 入口、最小权限、完整配置步骤及可复制的订阅提示词。
 
-`dot:luo` 和 `{"mailbox":"luo"}` 是保留兼容的协议标识，不是 Dot 的真实名字。
+新订阅使用 `{"mailbox":"dot"}`；旧参数 `{"mailbox":"luo"}` 兼容同一个绑定，不创建第二个邮箱。`dot:luo` 是保留兼容的本机消息路由标识，不是个人名字。
 
 ## 1. 在 HUD 配置一次
 
@@ -66,7 +66,7 @@ Keychain 可能要求用户授权；拒绝后须由用户处理，程序不会�
 
 将以下说明发送到现有 Dot（只需要首次设置，或实际订阅失效需要恢复时）：
 
-> 请订阅 Dot-HUD 的 `hud.message.created`，arguments 为 `{"mailbox":"luo"}`。
+> 请订阅 Dot-HUD 的 `hud.message.created`，arguments 为 `{"mailbox":"dot"}`。
 > 若工作区和订阅工具支持，请显式请求 `ttlMs: null`，保留无固定到期的订阅。
 > data.kind 为 `message` 时，先调用 `hud_ack_message`，id 使用
 > data.message_id；需要回复时调用一次 `hud_reply`，id 仍用原消息 ID。
@@ -88,7 +88,7 @@ HTTPS、公网地址和签名；代理方式仍将 callback 固定到已验证�
 新配置使用固定任务名“Dot-HUD 通信 · Mac”或“Dot-HUD 通信 · Windows”；已有任务以实际名称为准。
 清空事件列表不是退订方式。不要删除 Dot 聊天或新建重复订阅。
 平台协议 `events/unsubscribe` 使用原事件名 `hud.message.created`、
-原参数 `{"mailbox":"luo"}` 和原 webhook 绑定来定位订阅，由平台提供原 callback，
+该任务的原参数（新任务为 `{"mailbox":"dot"}`，旧任务可为 `{"mailbox":"luo"}`）和原 webhook 绑定来定位订阅，由平台提供原 callback，
 不需要用户读取或粘贴地址。HUD 已实现匹配退订，收到后下一轮状态刷新显示等待订阅。
 只暂停平台任务是否立即产生退订请求须核对实际结果，不能仅凭任务状态声称 HUD 已解绑。
 

@@ -89,7 +89,7 @@ def complete(adapter, message_id, native):
 
 
 def confirm(adapter, reply_id, source, challenge):
-    from hud_dot import Rejected, canonical, timestamp, headers_for, EVENT, MAILBOX
+    from hud_dot import Rejected, canonical, timestamp, headers_for, EVENT, MAILBOX, LEGACY_MAILBOX
     with adapter.db() as db:
         db.execute('BEGIN IMMEDIATE')
         row = db.execute('SELECT * FROM messages WHERE reply_id=?', (reply_id,)).fetchone()
@@ -103,7 +103,7 @@ def confirm(adapter, reply_id, source, challenge):
             return adapter.receipt(row['id'], source)
         if json.loads(row['native_receipt'] or '{}').get('state') in {'pending_hud', 'refused'}:
             raise Rejected('A reply not delivered by HUD cannot be confirmed')
-        sub = db.execute('SELECT * FROM subscriptions WHERE mailbox=?', (MAILBOX,)).fetchone()
+        sub = db.execute('SELECT * FROM subscriptions WHERE mailbox IN (?,?)', (MAILBOX, LEGACY_MAILBOX)).fetchone()
         active = adapter._active_subscription(sub)
         event_id = 'receipt-' + uuid.uuid4().hex if active else None
         # Persist both proof and notification reservation before the network call.
@@ -112,7 +112,7 @@ def confirm(adapter, reply_id, source, challenge):
     if not active:
         return adapter.receipt(row['id'], source)
     event = {'eventId': event_id, 'name': EVENT, 'timestamp': timestamp(adapter.clock()),
-             'cursor': None, 'data': {'kind': 'delivery_receipt', 'mailbox': MAILBOX,
+             'cursor': None, 'data': {'kind': 'delivery_receipt', 'mailbox': sub['mailbox'],
              'message_id': row['id'], 'source': source,
              'text': 'Recipient confirmed actual delivery of ' + ('message ' if row['origin'] == 'dot' else 'reply ') + reply_id}}
     body = canonical(event).encode()

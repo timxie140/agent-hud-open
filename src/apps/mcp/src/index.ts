@@ -1,4 +1,4 @@
-import { McpServer, type RegisteredTool } from "@modelcontextprotocol/server";
+import type { RegisteredTool } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
 import type { Snapshot } from "@agent-hud/protocol";
@@ -6,6 +6,7 @@ import {
   askHost,
   caller,
   hostSchema,
+  nativeServer,
   launchedBy,
   type HostTool,
 } from "./host-tools.ts";
@@ -31,7 +32,7 @@ const hostInterval =
     : 15_000;
 
 serveStdio(() => {
-  const server = new McpServer({ name: "agent-hud", version: "0.1.0" });
+  const server = nativeServer();
   server.registerTool(
     "get_hud",
     {

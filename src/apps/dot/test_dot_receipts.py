@@ -53,6 +53,17 @@ class ReceiptTests(unittest.TestCase):
         receipts.confirm(self.adapter, self.reply['replyId'], fixtures.SOURCE, getattr(self, 'challenge', 'not-from-input'))
         self.assertEqual(len(self.transport.calls), before)
 
+    def test_dot_mailbox_alias_keeps_final_receipt_on_the_same_verified_subscription(self):
+        legacy = self.adapter._subscription()['id']
+        modern = self.adapter.subscribe(self.subscription(arguments={'mailbox': 'dot'}))
+        self.assertEqual(legacy, modern['id'])
+        self.received()
+        result = receipts.confirm(self.adapter, self.reply['replyId'], fixtures.SOURCE, self.challenge)
+        self.assertTrue(result['recipientConfirmed'])
+        event = self.transport.calls[-1][1]
+        self.assertEqual(event['data']['mailbox'], 'dot')
+        self.assertEqual(event['data']['kind'], 'delivery_receipt')
+
     def test_other_thread_cannot_confirm(self):
         self.received()
         before = len(self.transport.calls)
