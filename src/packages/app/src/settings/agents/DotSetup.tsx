@@ -11,7 +11,7 @@ export function DotSetup({ t, platform }: { t: Text; platform?: string }) {
       : machine === "Windows"
         ? "Dot-HUD-Win"
         : "Dot-HUD";
-  const task = `Dot-HUD 通信${machine ? ` · ${machine}` : ""}`;
+  const task = `${t("Dot-HUD Communication", "Dot-HUD 通信")}${machine ? ` · ${machine}` : ""}`;
   const prompt = t(
     `Use the installed ${entry} plugin in this existing Dot conversation. First verify the entry and call hud_list_sessions read-only to check the host. If the entry has a different name, ask me to identify it; do not choose another machine.
 
@@ -54,8 +54,8 @@ data.kind=message 时，实际收到事件后用 data.message_id 调用 hud_ack_
         </Button>
       }
       footer={t(
-        "See README → Dot connection guide for Platform links, restricted key permissions and troubleshooting.",
-        "完整步骤、Platform 入口、密钥最小权限和故障排查见 README → Dot连接指南。",
+        "See README → Dot connection guide for setup and everyday use.",
+        "首次配置和日常使用步骤见 README → Dot连接指南。",
       )}
     >
       <Row
