@@ -41,9 +41,10 @@ pub(super) fn recorded(
         for entry in island["entries"].as_array()? {
             let turn = history["entitiesByKey"].get(entry["value"].as_str()?)?;
             let id = turn["turnId"].as_str().filter(|id| !id.is_empty())?;
-            if !ids.insert(id) {
-                return None;
-            }
+            // Canonical history can retain local/server entries for old turns.
+            // Only multiple matching inputs are ambiguous receipt evidence;
+            // unrelated duplicate turn IDs must not hide a unique real input.
+            ids.insert(id);
             turns.push(turn);
         }
     }

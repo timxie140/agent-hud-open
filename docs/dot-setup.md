@@ -49,6 +49,13 @@ Keychain 可能要求用户授权；拒绝后须由用户处理，程序不会�
    - 工具 `hud_ack_message`、`hud_reply`、`hud_get_delivery_status`
 4. 升级后在插件页重新扫描工具和事件，不要沿用只包含旧 payload schema 的缓存。
 
+新增工具后，在现有 **Dot-HUD-Mac / Dot-HUD-Win** 插件详情中执行 **Refresh**，
+确认目录列出 `hud_list_sessions` 和 `hud_send_message`。若目录已经更新、原 Luo
+仍只能看到旧工具，本机实测由用户在**原 Dot** 执行 `reboot dot` 后，新工具会在原会话出现。
+随后让 Luo 从正确机器入口只读调用 `hud_list_sessions`，核对 host 和目标 UUID。
+平台目录刷新与原 Dot 运行实例加载工具是两步；不要仅凭 HUD 重启或订阅恢复判断工具已更新。
+此步骤不要求新建替代聊天或重复订阅。
+
 不要猜 Dot ID，不新建替代聊天来冒充 Luo。`dot:luo` 是注册的逻辑邮箱 ID。
 
 ## 3. 给 Luo 的订阅说明
