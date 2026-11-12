@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Button } from "@agent-hud/ui/components/button";
+import { LinkButton } from "../SettingsControls";
 import { Notice, Row, Section, type Text } from "../SettingsPrimitives";
 
 export function DotSetup({ t, platform }: { t: Text; platform?: string }) {
@@ -53,10 +54,17 @@ data.kind=message 时，实际收到事件后用 data.message_id 调用 hud_ack_
           {copied ? t("Copied", "已复制") : t("Copy prompt", "复制提示词")}
         </Button>
       }
-      footer={t(
-        "See README → Dot connection guide for setup and everyday use.",
-        "首次配置和日常使用步骤见 README → Dot连接指南。",
-      )}
+      footer={
+        <>
+          {t("See the ", "见 ")}
+          <LinkButton
+            href={`https://github.com/timxie140/agent-hud-open/blob/main/docs/${t("dot-connection-guide.md", "Dot连接指南.md")}`}
+          >
+            {t("Dot connection guide", "Dot连接指南")}
+          </LinkButton>
+          {t(".", "。")}
+        </>
+      }
     >
       <Row
         title={t("1. Enable this plugin for your Dot", "1. 在 Dot 中启用插件")}
