@@ -12,6 +12,8 @@ mod tui;
 
 /// Agent HUD sends to Codex on this host.
 pub(crate) const SUPPORTED: bool = true;
+/// Keep Unix delivery unchanged until a newer schema is qualified there.
+pub(super) const STREAM_VERSIONS: &[u64] = &[11];
 /// What a send may ask for: start, steer and interrupt through the desktop
 /// app or the CLI daemon, and Codex's queue.
 pub(crate) const OPERATIONS: &[Operation] = &[

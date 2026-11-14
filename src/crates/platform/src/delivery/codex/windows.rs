@@ -6,6 +6,8 @@ use super::*;
 
 /// Agent HUD sends to Codex on this host.
 pub(crate) const SUPPORTED: bool = true;
+/// Exact native snapshot schemas qualified for private Windows owner delivery.
+pub(super) const STREAM_VERSIONS: &[u64] = &[11, 13];
 /// What a send may ask for: start and steer through the desktop app, and
 /// Codex's queue. Interrupt is not offered.
 pub(crate) const OPERATIONS: &[Operation] = &[

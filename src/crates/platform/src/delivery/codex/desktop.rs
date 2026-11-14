@@ -246,25 +246,16 @@ fn desktop_snapshot(
         if connection.decline_discovery(&value)? {
             continue;
         }
-        if value["type"] != "broadcast"
-            || value["method"] != "thread-stream-state-changed"
-            || value["sourceClientId"] != owner
-            || value["params"]["hostId"] != "local"
-            || value["params"]["conversationId"] != thread
-        {
-            continue;
+        match super::snapshot::decode(&value, owner, thread, super::transport::STREAM_VERSIONS) {
+            Ok(Some(state)) => return Ok(state),
+            Ok(None) => continue,
+            Err(super::snapshot::SnapshotError::Version) => {
+                return Err(Failure::Protocol("Desktop stream version".into()));
+            }
+            Err(super::snapshot::SnapshotError::State) => {
+                return Err(Failure::Protocol("Desktop state".into()));
+            }
         }
-        if value["version"] != 11 {
-            return Err(Failure::Protocol("Desktop stream version".into()));
-        }
-        let change = &value["params"]["change"];
-        if change["type"] != "snapshot" {
-            continue;
-        }
-        if !change["conversationState"].is_object() {
-            return Err(Failure::Protocol("Desktop state".into()));
-        }
-        return Ok(change["conversationState"].clone());
     })();
     // No standing subscription or second state collector is retained by sending.
     let _ = connection.post(follow(false));
