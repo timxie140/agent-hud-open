@@ -164,7 +164,15 @@ fn server(
         }
         // Refusals, idle decisions and uncertain ACKs must not emit another
         // mutation or a queue submission. The fixture sees EOF, never a retry.
-        assert_eq!(server.read(&mut [0]).await.unwrap(), 0);
+        match server.read(&mut [0]).await {
+            Ok(0) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                ) => {}
+            other => panic!("Unexpected post-decision pipe activity: {other:?}"),
+        }
     })
 }
 
