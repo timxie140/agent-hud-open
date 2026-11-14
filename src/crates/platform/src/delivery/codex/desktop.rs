@@ -50,6 +50,18 @@ pub(super) fn deliver(
             Err(IpcError::Unavailable) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
+    deliver_on(&mut connection, target, request, thread, timeout)
+}
+
+// A connected, peer-validated owner transport; isolated pipe fixtures use this
+// same operation path without redirecting the installed application's endpoint.
+pub(super) fn deliver_on(
+    connection: &mut DesktopIpc,
+    target: &SessionTarget,
+    request: &SendRequest,
+    thread: &str,
+    timeout: Duration,
+) -> Result<Option<Receipt>> {
     let initialized = connection.request(
         "initialize",
         0,
@@ -85,7 +97,7 @@ pub(super) fn deliver(
     }
     let mut observed_turn = None;
     let selected = if request.operation == Operation::SteerOrEnqueue {
-        let state = desktop_snapshot(&mut connection, &client, &owner, thread)?;
+        let state = desktop_snapshot(connection, &client, &owner, thread)?;
         let current = super::current_desktop_turn(&state)?;
         let Some((turn, status)) = current else {
             return Ok(None);
@@ -99,7 +111,7 @@ pub(super) fn deliver(
         observed_turn = Some(turn);
         Operation::Steer
     } else if request.operation == Operation::Automatic {
-        let state = desktop_snapshot(&mut connection, &client, &owner, thread)?;
+        let state = desktop_snapshot(connection, &client, &owner, thread)?;
         if super::current_desktop_turn(&state)?.is_some_and(|(_, status)| status == "inProgress") {
             Operation::Steer
         } else {
@@ -107,7 +119,7 @@ pub(super) fn deliver(
         }
     } else {
         if request.operation == Operation::Steer {
-            let state = desktop_snapshot(&mut connection, &client, &owner, thread)?;
+            let state = desktop_snapshot(connection, &client, &owner, thread)?;
             let current = super::current_desktop_turn(&state)?;
             if !current.is_some_and(|(turn, status)| {
                 status == "inProgress" && request.expected_turn_id.as_deref() == Some(turn.as_str())
@@ -233,7 +245,7 @@ pub(super) fn owned_snapshot(
     desktop_snapshot(&mut connection, &client, &owner, thread).map(Some)
 }
 
-fn desktop_snapshot(
+pub(super) fn desktop_snapshot(
     connection: &mut DesktopIpc,
     client: &str,
     owner: &str,
@@ -246,25 +258,16 @@ fn desktop_snapshot(
         if connection.decline_discovery(&value)? {
             continue;
         }
-        if value["type"] != "broadcast"
-            || value["method"] != "thread-stream-state-changed"
-            || value["sourceClientId"] != owner
-            || value["params"]["hostId"] != "local"
-            || value["params"]["conversationId"] != thread
-        {
-            continue;
+        match super::snapshot::decode(&value, owner, thread, super::transport::STREAM_VERSIONS) {
+            Ok(Some(state)) => return Ok(state),
+            Ok(None) => continue,
+            Err(super::snapshot::SnapshotError::Version) => {
+                return Err(Failure::Protocol("Desktop stream version".into()));
+            }
+            Err(super::snapshot::SnapshotError::State) => {
+                return Err(Failure::Protocol("Desktop state".into()));
+            }
         }
-        if value["version"] != 11 {
-            return Err(Failure::Protocol("Desktop stream version".into()));
-        }
-        let change = &value["params"]["change"];
-        if change["type"] != "snapshot" {
-            continue;
-        }
-        if !change["conversationState"].is_object() {
-            return Err(Failure::Protocol("Desktop state".into()));
-        }
-        return Ok(change["conversationState"].clone());
     })();
     // No standing subscription or second state collector is retained by sending.
     let _ = connection.post(follow(false));

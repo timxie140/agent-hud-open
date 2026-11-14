@@ -4,7 +4,12 @@ use super::*;
 use std::path::Path;
 
 mod desktop;
+#[cfg(all(test, windows))]
+mod desktop_windows_tests;
 mod observed;
+mod snapshot;
+#[cfg(test)]
+mod snapshot_tests;
 #[cfg(any(test, feature = "fixtures"))]
 pub use observed::fixture as received_input_fixture;
 pub use observed::ReceivedInput;
