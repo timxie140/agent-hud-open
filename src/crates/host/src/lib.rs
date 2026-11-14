@@ -22,6 +22,7 @@ mod mcp_clients;
 mod messages;
 mod phones;
 mod picture;
+mod recovery;
 mod requests;
 mod screens;
 mod service;
@@ -67,6 +68,9 @@ pub fn run_with_options(
         std::process::exit(status);
     }
     let demo = demo::wanted(&arguments);
+    if let Some(status) = recovery::entry(&arguments, demo, &options) {
+        std::process::exit(status);
+    }
     let mut demo_script = match demo::script(&arguments) {
         Ok(script) => script,
         Err(error) => {
@@ -234,6 +238,7 @@ pub fn run_with_options(
                 let handle = app.handle().clone();
                 app.manage(lock.listen(Arc::new(move || auxiliary::show(&handle))));
             }
+            recovery::ready(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -276,6 +281,7 @@ pub fn run_with_options(
                 api.prevent_exit();
             }
             if matches!(event, tauri::RunEvent::Exit) {
+                recovery::exited();
                 coordinator::stop(app);
                 screens::shutdown(app);
                 if let Some(service) = app.try_state::<Service>() {

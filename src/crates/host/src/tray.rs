@@ -33,7 +33,10 @@ pub fn install(app: &tauri::App) -> tauri::Result<()> {
             "tray-toggle-glow" => crate::coordinator::toggle_glow(app),
             "tray-refresh" => crate::auxiliary::refresh_data(app),
             "tray-update" => crate::coordinator::open_update_page(app),
-            "tray-quit" => app.exit(0),
+            "tray-quit" => {
+                crate::recovery::user_quit();
+                app.exit(0);
+            }
             id if id.starts_with("tray-data-") => statistics(app),
             _ => {}
         })
