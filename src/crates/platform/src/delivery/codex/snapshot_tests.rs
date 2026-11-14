@@ -15,17 +15,22 @@ fn envelope(version: u64, state: Value) -> Value {
         "params": {
             "hostId": "local",
             "conversationId": THREAD,
-            "change": {"type": "snapshot", "conversationState": state}
+            "change": {"type": "snapshot", "revision": 1, "conversationState": state}
         }
     })
 }
 
 fn canonical(turn: Option<Value>) -> Value {
     let (entries, entities) = match turn {
-        Some(turn) => (
-            json!([{"value": "synthetic-key"}]),
-            json!({"synthetic-key": turn}),
-        ),
+        Some(mut turn) => {
+            if let Some(object) = turn.as_object_mut() {
+                object.entry("items").or_insert(json!([]));
+            }
+            (
+                json!([{"value": "synthetic-key"}]),
+                json!({"synthetic-key": turn}),
+            )
+        }
         None => (json!([]), json!({})),
     };
     json!({
@@ -239,4 +244,96 @@ fn version_13_still_requires_unique_canonical_receiving_input() {
     let mut optimistic = decoded.clone();
     optimistic["turns"] = json!([{"turnId":"received-turn"}]);
     assert!(super::observed::recorded(&optimistic, THREAD, "m-v13", &fingerprint).is_none());
+}
+
+#[test]
+fn version_13_never_ignores_a_nonempty_overlay_or_unknown_latest_boundary() {
+    let idle = canonical(Some(json!({"turnId":"finished", "status":"completed"})));
+    let mut overlay = idle.clone();
+    overlay["turns"] = json!([{"turnId":"active-overlay", "status":"inProgress"}]);
+    let mut cases = vec![overlay];
+    for status in [Value::Null, json!("loading"), json!("available")] {
+        let mut state = idle.clone();
+        state["turnHistory"]["history"]["islands"][0]["newerBoundary"]["status"] = status;
+        cases.push(state);
+    }
+    let mut no_islands = idle.clone();
+    no_islands["turnHistory"]["history"]["islands"] = json!([]);
+    cases.push(no_islands);
+    let mut unresolved = idle.clone();
+    unresolved["turnHistory"]["history"]["islands"][0]["entries"] = json!([{"value":"absent"}]);
+    cases.push(unresolved);
+    let mut stale_active = idle.clone();
+    let history = &mut stale_active["turnHistory"]["history"];
+    history["entitiesByKey"]["active"] =
+        json!({"turnId":"active", "status":"inProgress", "items":[]});
+    history["islands"][0]["entries"] = json!([{"value":"active"}, {"value":"synthetic-key"}]);
+    cases.push(stale_active);
+    let mut empty_latest = idle.clone();
+    empty_latest["turnHistory"]["history"]["islands"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"entries":[], "newerBoundary":{"status":"exhausted"}}));
+    cases.push(empty_latest);
+    for state in cases {
+        assert_eq!(
+            decode(&envelope(13, state), OWNER, THREAD, VERSIONS),
+            Err(SnapshotError::State)
+        );
+    }
+    for revision in [Value::Null, json!("1"), json!(1.5), json!(-1)] {
+        let mut message = envelope(13, idle.clone());
+        message["params"]["change"]["revision"] = revision;
+        assert_eq!(
+            decode(&message, OWNER, THREAD, VERSIONS),
+            Err(SnapshotError::State)
+        );
+    }
+}
+
+#[test]
+fn version_13_accepts_partial_older_history_with_a_complete_latest_island() {
+    for status in ["inProgress", "completed", "interrupted", "failed"] {
+        let mut state = canonical(Some(json!({"turnId":"latest", "status":status})));
+        let history = &mut state["turnHistory"]["history"];
+        history["isComplete"] = json!(false);
+        history["islands"][0]["olderBoundary"] = json!({"status":"available"});
+        let decoded = decode(&envelope(13, state), OWNER, THREAD, VERSIONS)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            current_desktop_turn(&decoded).unwrap(),
+            Some(("latest".into(), status.into()))
+        );
+    }
+}
+
+#[test]
+fn version_13_native_ids_need_exact_unique_input_and_never_a_model_echo() {
+    use sha2::{Digest, Sha256};
+    let text = "complete synthetic receiving input";
+    let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
+    let state = canonical(Some(
+        json!({"turnId":"received", "status":"completed", "items":[
+        {"type":"userMessage", "id":"server-generated", "clientId":"native-client",
+         "content":[{"type":"text", "text":text}]}]}),
+    ));
+    let decoded = decode(&envelope(13, state), OWNER, THREAD, VERSIONS)
+        .unwrap()
+        .unwrap();
+    assert!(super::observed::recorded(&decoded, THREAD, "m-v13", &hash).is_some());
+    for item in [
+        json!({"type":"agentMessage", "content":[{"type":"text", "text":text}]}),
+        json!({"type":"userMessage", "content":[{"type":"text", "text":format!("{text} altered")}]}),
+        json!({"type":"steeringUserMessage", "status":"pending", "input":[{"type":"text", "text":text}]}),
+    ] {
+        let mut value = decoded.clone();
+        value["turnHistory"]["history"]["entitiesByKey"]["synthetic-key"]["items"] = json!([item]);
+        assert!(super::observed::recorded(&value, THREAD, "m-v13", &hash).is_none());
+    }
+    let mut duplicate = decoded.clone();
+    let items = &mut duplicate["turnHistory"]["history"]["entitiesByKey"]["synthetic-key"]["items"];
+    let copy = items[0].clone();
+    items.as_array_mut().unwrap().push(copy);
+    assert!(super::observed::recorded(&duplicate, THREAD, "m-v13", &hash).is_none());
 }

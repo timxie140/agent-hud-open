@@ -39,20 +39,41 @@ pub(super) fn decode(
         let history = &state["turnHistory"]["history"];
         if state["id"] != thread
             || state["hostId"] != "local"
-            || !state["turns"].is_array()
+            || !state["turns"].as_array().is_some_and(Vec::is_empty)
+            || change["revision"].as_u64().is_none()
             || state["turnHistory"]["kind"] != "canonical"
             || !history["islands"].is_array()
             || !history["entitiesByKey"].is_object()
         {
             return Err(SnapshotError::State);
         }
+        // Only an exhausted newest boundary proves that the latest turn is
+        // loaded. Older history may still be paged out; isComplete need not be true.
+        let newest = history["islands"]
+            .as_array()
+            .and_then(|islands| islands.last())
+            .filter(|island| island["newerBoundary"]["status"] == "exhausted")
+            .ok_or(SnapshotError::State)?;
+        let entries = newest["entries"].as_array().ok_or(SnapshotError::State)?;
+        for (index, entry) in entries.iter().enumerate() {
+            let turn = entry["value"]
+                .as_str()
+                .and_then(|key| history["entitiesByKey"].get(key))
+                .ok_or(SnapshotError::State)?;
+            if !turn["turnId"].as_str().is_some_and(|id| !id.is_empty())
+                || !turn["items"].is_array()
+                || !matches!(
+                    turn["status"].as_str(),
+                    Some("inProgress" | "completed" | "failed" | "interrupted")
+                )
+                || (turn["status"] == "inProgress" && index + 1 != entries.len())
+            {
+                return Err(SnapshotError::State);
+            }
+        }
         let current = super::current_desktop_turn(state).map_err(|_| SnapshotError::State)?;
-        if current.is_some_and(|(_, status)| {
-            !matches!(
-                status.as_str(),
-                "inProgress" | "completed" | "failed" | "interrupted"
-            )
-        }) {
+        // Do not let the legacy selector fall back across a history gap.
+        if entries.is_empty() && current.is_some() {
             return Err(SnapshotError::State);
         }
     }

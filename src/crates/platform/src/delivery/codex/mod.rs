@@ -4,6 +4,8 @@ use super::*;
 use std::path::Path;
 
 mod desktop;
+#[cfg(all(test, windows))]
+mod desktop_windows_tests;
 mod observed;
 mod snapshot;
 #[cfg(test)]
