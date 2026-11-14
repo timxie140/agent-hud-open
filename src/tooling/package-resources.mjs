@@ -35,6 +35,13 @@ const debug = process.env.TAURI_ENV_DEBUG === "true";
 const targetDirectory = process.env.CARGO_TARGET_DIR
   ? resolve(root, process.env.CARGO_TARGET_DIR)
   : join(root, "target");
+if (platform === "windows") {
+  run(process.execPath, [
+    "src/tooling/windows/build-recovery.mjs",
+    "--out",
+    join(output, "agent-hud-recovery.exe"),
+  ]);
+}
 run("cargo", [
   "build",
   "-p",

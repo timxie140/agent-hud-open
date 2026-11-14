@@ -104,6 +104,7 @@ pub(crate) async fn hud_show_main(
 /// Quit from the Settings and Statistics windows' menu, as the menu bar's Quit.
 #[tauri::command]
 pub(crate) fn quit_app(app: tauri::AppHandle) {
+    crate::recovery::user_quit();
     app.exit(0);
 }
 

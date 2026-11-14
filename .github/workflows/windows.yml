@@ -36,6 +36,8 @@ jobs:
       - name: Test Dot transport, secure storage and delivery receipts
         working-directory: src/apps/dot
         run: python -B -m unittest discover -v
+      - name: Test recovery with isolated fixture processes
+        run: ./src/tooling/windows/recovery/tests/Run-Isolated.ps1 -Base "$env:RUNNER_TEMP/agent-hud-recovery-tests"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
