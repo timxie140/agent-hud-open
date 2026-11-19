@@ -37,14 +37,23 @@ fn err(code: i32) -> std::io::Error {
 
 #[test]
 fn automatic_discovery_uses_current_runtime_on_each_operation() {
-    let old = path("old.exe");
-    let new = path("new.exe");
-    let newer = path("newer.exe");
+    let temp = tempfile::tempdir().unwrap();
+    let old = temp.path().join("old.exe");
+    let new = temp.path().join("new.exe");
+    let newer = temp.path().join("newer.exe");
+    for file in [&old, &new, &newer] {
+        std::fs::write(file, b"fixture only; never executed").unwrap();
+    }
+    assert!(old.is_file());
     for current in [&old, &new, &newer] {
         let (result, events) = test_spawn(&old, true, vec![Ok(current.clone())], vec![Ok(7)]);
         assert_eq!(result.unwrap(), (7, current.clone()));
         assert_eq!(events, ["resolve", &format!("spawn:{}", current.display())]);
     }
+    std::fs::remove_file(&old).unwrap();
+    let (result, events) = test_spawn(&old, true, vec![Ok(newer.clone())], vec![Ok(8)]);
+    assert_eq!(result.unwrap(), (8, newer.clone()));
+    assert_eq!(events, ["resolve", &format!("spawn:{}", newer.display())]);
 }
 
 #[test]
