@@ -282,3 +282,110 @@ fn omitted_optional_next_cursor_is_accepted_as_complete() {
         ]
     );
 }
+
+#[test]
+fn journal_retries_and_restart_never_repeat_queue_write_or_wake() {
+    struct Transport {
+        rpc: Mutex<FakeRpc>,
+        opener: FakeOpener,
+    }
+    impl CodexTransport for Transport {
+        fn deliver(
+            &self,
+            _: &Path,
+            target: &SessionTarget,
+            request: &SendRequest,
+            _: Duration,
+        ) -> Result<Receipt> {
+            let message_id = format!("agent-hud:{}", request.request_id);
+            let reason = enqueue_with(
+                &mut *self.rpc.lock().unwrap(),
+                &self.opener,
+                THREAD,
+                &request.text,
+                &message_id,
+            )?;
+            Ok(Receipt {
+                provider: Provider::Codex,
+                session_id: target.session_id.clone(),
+                thread_id: target.thread_id.clone(),
+                request_id: request.request_id.clone(),
+                client_request_id: message_id,
+                turn_id: None,
+                owner_client_id: None,
+                state: DeliveryState::Queued,
+                at_ms: millis(SystemTime::now()),
+                reason: Some(reason.into()),
+            })
+        }
+    }
+    for fail_open in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("private");
+        let paths = || LocalClientPaths {
+            claude_channel: root.join("claude"),
+            codex_data: root.join("codex"),
+            receipts: root.join("receipts"),
+        };
+        let target = SessionTarget {
+            provider: Provider::Codex,
+            session_id: THREAD.into(),
+            thread_id: Some(THREAD.into()),
+            parent_id: None,
+        };
+        let request = SendRequest {
+            provider: Provider::Codex,
+            session_id: THREAD.into(),
+            request_id: "wake-fixture".into(),
+            text: TEXT.into(),
+            form: PromptForm::Own,
+            operation: Operation::SteerOrEnqueue,
+            expected_turn_id: None,
+        };
+        let mut submission = item();
+        submission["clientUserMessageId"] = json!("agent-hud:wake-fixture");
+        let (rpc, opener, calls) = fixture(
+            vec![Ok(list(vec![])), Ok(list(vec![submission.clone()]))],
+            Ok(json!({"queuedSubmission":submission})),
+            fail_open,
+        );
+        let transport = Arc::new(Transport {
+            rpc: Mutex::new(rpc),
+            opener,
+        });
+        let service = || {
+            LocalClients::with_transport(
+                paths(),
+                vec![target.clone()],
+                transport.clone(),
+                Duration::from_secs(1),
+            )
+            .unwrap()
+        };
+        {
+            let service = service();
+            let first = service.send(request.clone()).unwrap();
+            assert_eq!(first.state, DeliveryState::Queued);
+            assert_eq!(
+                serde_json::to_value(service.send(request.clone()).unwrap()).unwrap(),
+                serde_json::to_value(first).unwrap()
+            );
+            let mut edited = request.clone();
+            edited.text.push_str(" changed");
+            assert_eq!(service.send(edited).unwrap_err(), Failure::IdentityConflict);
+        }
+        assert_eq!(
+            service().send(request).unwrap().state,
+            DeliveryState::Queued
+        );
+        assert_eq!(
+            methods(&calls),
+            [
+                "thread/queue/list",
+                "thread/queue/add",
+                "thread/queue/list",
+                "open"
+            ]
+        );
+    }
+}
