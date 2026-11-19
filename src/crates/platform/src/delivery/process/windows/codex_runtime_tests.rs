@@ -53,8 +53,8 @@ fn fixed_custom_path_never_resolves_even_on_not_found() {
     for launch in [Ok(1), Err(err(2)), Err(err(3)), Err(err(5))] {
         let (result, events) = test_spawn(&custom, false, vec![], vec![launch]);
         assert_eq!(events, ["spawn:custom.exe"]);
-        if result.is_ok() {
-            assert_eq!(result.unwrap(), (1, custom.clone()));
+        if let Ok(actual) = result {
+            assert_eq!(actual, (1, custom.clone()));
         }
     }
 }

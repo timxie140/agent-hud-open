@@ -108,28 +108,27 @@ fn owned_name(pointer: *const u16, buffer: &[u16]) -> Result<Vec<u16>, String> {
 }
 
 fn manifest_engine(root: &Path, xml: &str) -> Result<PathBuf, String> {
-    use quick_xml::{events::Event, Reader};
+    use quick_xml::{events::Event, Reader, XmlVersion};
     let mut reader = Reader::from_str(xml.trim_start_matches('\u{feff}'));
     let mut candidates = Vec::new();
-    let mut elements: Vec<Vec<u8>> = Vec::new();
+    let mut elements: Vec<String> = Vec::new();
     let mut seen_root = false;
+    let mut version = XmlVersion::Implicit1_0;
     loop {
         let event = reader.read_event().map_err(|_| UNAVAILABLE)?;
         match &event {
             Event::Start(element) | Event::Empty(element)
-                if element.local_name().as_ref() == b"Application"
+                if element.local_name().as_ref() == "Application"
                     && elements
                         .iter()
-                        .map(Vec::as_slice)
-                        .eq([b"Package".as_slice(), b"Applications".as_slice()]) =>
+                        .map(String::as_str)
+                        .eq(["Package", "Applications"]) =>
             {
                 for attr in element.attributes() {
                     let attr = attr.map_err(|_| UNAVAILABLE)?;
-                    if attr.key.as_ref() == b"Executable" {
-                        let entry = attr
-                            .decode_and_unescape_value(reader.decoder())
-                            .map_err(|_| UNAVAILABLE)?;
-                        let relative = Path::new(entry.as_ref());
+                    if attr.key.as_ref() == "Executable" {
+                        let entry = attr.normalized_value(version).map_err(|_| UNAVAILABLE)?;
+                        let relative = Path::new(&*entry);
                         if relative.is_absolute()
                             || relative
                                 .components()
@@ -157,16 +156,16 @@ fn manifest_engine(root: &Path, xml: &str) -> Result<PathBuf, String> {
         match event {
             Event::Start(element) => {
                 if elements.is_empty() {
-                    if seen_root || element.local_name().as_ref() != b"Package" {
+                    if seen_root || element.local_name().as_ref() != "Package" {
                         return Err(UNAVAILABLE.into());
                     }
                     seen_root = true;
                 }
-                elements.push(element.local_name().as_ref().to_vec());
+                elements.push(element.local_name().as_ref().to_owned());
             }
             Event::Empty(element) => {
                 if elements.is_empty() {
-                    if seen_root || element.local_name().as_ref() != b"Package" {
+                    if seen_root || element.local_name().as_ref() != "Package" {
                         return Err(UNAVAILABLE.into());
                     }
                     seen_root = true;
@@ -178,11 +177,18 @@ fn manifest_engine(root: &Path, xml: &str) -> Result<PathBuf, String> {
                 return Err(UNAVAILABLE.into())
             }
             Event::Text(text)
-                if elements.is_empty() && !text.as_ref().iter().all(u8::is_ascii_whitespace) =>
+                if elements.is_empty()
+                    && !text.as_ref().bytes().all(|b| b.is_ascii_whitespace()) =>
             {
                 return Err(UNAVAILABLE.into())
             }
             Event::DocType(_) => return Err(UNAVAILABLE.into()),
+            Event::Decl(declaration) => {
+                if seen_root {
+                    return Err(UNAVAILABLE.into());
+                }
+                version = declaration.xml_version().map_err(|_| UNAVAILABLE)?;
+            }
             Event::Eof => {
                 if !seen_root || !elements.is_empty() {
                     return Err(UNAVAILABLE.into());

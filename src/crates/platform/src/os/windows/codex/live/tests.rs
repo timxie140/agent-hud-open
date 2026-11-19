@@ -30,6 +30,29 @@ fn accepts_registered_relative_application_and_bom_whitespace() {
 }
 
 #[test]
+fn declared_versions_and_escaped_paths_use_the_locked_xml_api() {
+    let (_temp, root) = fixture();
+    let cli = make_app(&root, "app&fixture", "Codex.exe");
+    for version in ["1.0", "1.1"] {
+        let xml = format!(
+            "<?xml version=\"{version}\"?>{}",
+            manifest(&application(r"app&amp;fixture\Codex.exe"))
+        );
+        assert_eq!(manifest_engine(&root, &xml).unwrap(), cli);
+    }
+    let xml = format!(
+        "{}<Package/>",
+        manifest(&application(r"app&amp;fixture\Codex.exe"))
+    );
+    assert!(manifest_engine(&root, &xml).is_err());
+    let unclosed = format!(
+        "<Package><Applications>{}",
+        application(r"app&amp;fixture\Codex.exe")
+    );
+    assert!(manifest_engine(&root, &unclosed).is_err());
+}
+
+#[test]
 fn rejects_external_entity_and_doctype() {
     let (_temp, root) = fixture();
     make_app(&root, "app", "Codex.exe");
