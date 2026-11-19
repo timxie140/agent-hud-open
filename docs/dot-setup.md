@@ -99,6 +99,8 @@ HTTPS、公网地址和签名；代理方式仍将 callback 固定到已验证�
 
 DSH 通过本机原生 `send_message` 发给 Codex（包括 `reply_to` 回信）时，运行中的可验证 Desktop 聊天自动 steer，空闲或确认无 owner 时 queued；拒绝或不确定时不改走队列重发。
 
+Windows 自动投递会在确认原队列为空、入队后仅包含本条原始消息时，请求原生 Codex 唤醒该线程；有旧队列或核对不确定时保持排队。唤醒请求不等于已启动或已收件，仍需实际输入与回执验证。参见 [Windows 队列唤醒](windows-codex-queue-wake.md)。
+
 使用 HUD 已有工具：
 
 ```json

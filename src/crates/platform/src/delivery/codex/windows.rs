@@ -4,6 +4,9 @@
 //! interrupted.
 use super::*;
 
+#[path = "windows/queue_wake.rs"]
+mod queue_wake;
+
 /// Agent HUD sends to Codex on this host.
 pub(crate) const SUPPORTED: bool = true;
 /// Exact native snapshot schemas qualified for private Windows owner delivery.
@@ -43,7 +46,12 @@ pub(super) fn deliver(
     }
     let route = queue.ok_or_else(|| Failure::Unavailable("Codex executable".into()))?;
     let message_id = format!("agent-hud:{}", request.request_id);
-    enqueue_stdio(route, data, thread, &request.text, &message_id, timeout)?;
+    let reason = if request.operation == Operation::SteerOrEnqueue {
+        queue_wake::enqueue(route, data, thread, &request.text, &message_id, timeout)?
+    } else {
+        enqueue_stdio(route, data, thread, &request.text, &message_id, timeout)?;
+        "Queued until Codex opens the thread"
+    };
     Ok(Receipt {
         provider: Provider::Codex,
         session_id: target.session_id.clone(),
@@ -54,7 +62,7 @@ pub(super) fn deliver(
         owner_client_id: None,
         state: DeliveryState::Queued,
         at_ms: millis(SystemTime::now()),
-        reason: Some("Queued until Codex opens the thread".into()),
+        reason: Some(reason.into()),
     })
 }
 
