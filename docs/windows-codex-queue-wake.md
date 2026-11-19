@@ -7,6 +7,9 @@ requests `codex://threads/wake/<thread UUID>` through the existing Windows
 protocol handler so the original Desktop client can consume that queue.
 No second conversation or alternative owner is created.
 
+The temporary app-server must also use the currently registered Codex runtime
+after a Store update; see [runtime update handling](windows-codex-runtime-updates.md).
+
 The previous Windows adapter only added the queue item. An idle thread could
 therefore keep the accepted message until the user manually opened or started
 it. The Unix adapter already used Codex's wake URI; this change adds the missing

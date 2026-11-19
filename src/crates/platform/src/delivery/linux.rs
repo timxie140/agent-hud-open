@@ -5,6 +5,10 @@ pub(crate) use super::unix::{command_folders, is_path_key, new_file_options};
 use super::Result;
 use std::path::{Path, PathBuf};
 
+pub(crate) fn discover_codex_per_operation() -> bool {
+    false
+}
+
 /// Desktop apps are not looked for on Linux yet, so offers and starts go by
 /// the command lines alone; an adapter would read the apps' installed
 /// `.desktop` entries.

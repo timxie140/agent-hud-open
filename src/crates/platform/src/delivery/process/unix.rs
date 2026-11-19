@@ -6,6 +6,15 @@ use std::{
     process::{Child, ChildStderr, ChildStdout},
 };
 
+pub(super) fn spawn_codex(
+    executable: &std::path::Path,
+    _discover: bool,
+    _environment: &BTreeMap<String, String>,
+    mut spawn: impl FnMut(&std::path::Path) -> std::io::Result<Child>,
+) -> Result<(Child, PathBuf)> {
+    Ok((spawn(executable)?, executable.to_path_buf()))
+}
+
 /// Turns the child's pipes to non-blocking, so a read takes only what is
 /// there. On failure the child is killed.
 pub(super) fn prepare(child: &mut Child, stdout: &ChildStdout, stderr: &ChildStderr) -> Result<()> {

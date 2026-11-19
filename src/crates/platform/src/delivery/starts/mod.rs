@@ -27,6 +27,10 @@ pub struct StartConfig {
     pub codex_data: PathBuf,
     pub claude_executable: Option<PathBuf>,
     pub codex_executable: Option<PathBuf>,
+    /// Native discovery may refresh an installed client between operations.
+    /// Explicit/saved custom configurations remain pinned by default.
+    #[serde(default)]
+    pub discover_codex_executable: bool,
     #[serde(default)]
     pub antigravity_executable: Option<PathBuf>,
     /// Not read by starts, which look for the desktop apps on disk at every
@@ -44,8 +48,12 @@ impl StartConfig {
     /// Codex this computer starts sessions with, in the environment it starts
     /// them in.
     pub fn codex_queue(&self) -> Option<QueueRoute> {
+        if self.codex_executable.is_none() && !self.discover_codex_executable {
+            return None;
+        }
         Some(QueueRoute {
-            executable: self.codex_executable.clone()?,
+            executable: self.codex_executable.clone().unwrap_or_default(),
+            discover_executable: self.discover_codex_executable,
             environment: environment(self),
             applications: self.applications(),
         })

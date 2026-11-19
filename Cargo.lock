@@ -161,6 +161,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "plist",
+ "quick-xml",
  "reqwest",
  "rusqlite",
  "security-framework",

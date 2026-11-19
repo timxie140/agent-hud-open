@@ -1095,6 +1095,7 @@ for line in sys.stdin:
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
         let route = QueueRoute {
+            discover_executable: false,
             executable: script,
             environment: [
                 ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),

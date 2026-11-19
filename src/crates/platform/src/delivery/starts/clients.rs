@@ -77,17 +77,15 @@ impl SessionStarts {
                 return started;
             }
         }
-        let executable = self
+        let route = self
             .config
-            .codex_executable
-            .as_ref()
+            .codex_queue()
             .ok_or_else(|| Failure::Unavailable("Codex executable".into()))?;
-        let mut server = StdioServer::open(
-            executable,
-            &self.config.codex_data,
-            &environment(&self.config),
-            Duration::from_secs(20),
-        )?;
+        let mut server =
+            StdioServer::open_route(&route, &self.config.codex_data, Duration::from_secs(20))?;
+        // Pin both phases before the first mutation. An update after thread/start
+        // must not switch runtimes, recreate the thread, or replay its input.
+        let route = route.pinned(server.executable());
         let value = server.mutation("thread/start", json!({"cwd":folder,"ephemeral":false}))?;
         let id = value["thread"]["id"]
             .as_str()
@@ -109,10 +107,7 @@ impl SessionStarts {
             server.mutation("thread/name/set", json!({"threadId":id,"name":title}))?;
             server.end();
             codex::queue_created(
-                &self
-                    .config
-                    .codex_queue()
-                    .ok_or_else(|| Failure::Unavailable("Codex executable".into()))?,
+                &route,
                 &self.config.codex_data,
                 &id,
                 &request.text,

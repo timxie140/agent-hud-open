@@ -7,6 +7,8 @@ mod desktop;
 #[cfg(all(test, windows))]
 mod desktop_windows_tests;
 mod observed;
+#[cfg(test)]
+mod runtime_policy_tests;
 mod snapshot;
 #[cfg(test)]
 mod snapshot_tests;
@@ -54,8 +56,21 @@ pub struct NativeCodexTransport {
 #[derive(Clone, Debug)]
 pub struct QueueRoute {
     pub executable: std::path::PathBuf,
+    /// Resolve an automatically discovered runtime at the operation boundary.
+    /// False pins an explicit/custom executable, including isolated fixtures.
+    pub discover_executable: bool,
     pub environment: std::collections::BTreeMap<String, String>,
     pub applications: Vec<std::path::PathBuf>,
+}
+impl QueueRoute {
+    /// After the first child starts, later phases of the same request keep it.
+    pub(crate) fn pinned(&self, executable: &Path) -> Self {
+        Self {
+            executable: executable.into(),
+            discover_executable: false,
+            ..self.clone()
+        }
+    }
 }
 impl CodexTransport for NativeCodexTransport {
     fn received_input(
@@ -88,8 +103,7 @@ fn enqueue_stdio(
     message_id: &str,
     timeout: Duration,
 ) -> Result<()> {
-    let mut server =
-        process::StdioServer::open(&route.executable, data, &route.environment, timeout)?;
+    let mut server = process::StdioServer::open_route(route, data, timeout)?;
     let value = server.mutation(
         "thread/queue/add",
         serde_json::json!({"threadId":thread,"clientUserMessageId":message_id,
