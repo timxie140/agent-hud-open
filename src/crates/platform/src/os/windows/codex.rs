@@ -23,6 +23,9 @@ const CACHE_FILES: [&str; 4] = [
     "codex-command-runner.exe",
 ];
 
+mod live;
+pub(crate) use live::{discover_live_codex, tracks_registered_codex};
+
 pub(super) struct Installation {
     pub installed: bool,
     pub engines: Vec<PathBuf>,

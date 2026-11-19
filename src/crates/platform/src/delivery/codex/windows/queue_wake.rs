@@ -25,8 +25,7 @@ pub(super) fn enqueue(
     message_id: &str,
     timeout: Duration,
 ) -> Result<&'static str> {
-    let mut server =
-        process::StdioServer::open(&route.executable, data, &route.environment, timeout)?;
+    let mut server = process::StdioServer::open_route(route, data, timeout)?;
     let reason = enqueue_with(
         &mut server,
         &process::NativeProcessRunner,

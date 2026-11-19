@@ -3,6 +3,7 @@ mod acl;
 mod antigravity;
 mod apps;
 mod codex;
+pub(crate) use codex::{discover_live_codex, tracks_registered_codex};
 mod files;
 pub(crate) mod pipe;
 mod process;

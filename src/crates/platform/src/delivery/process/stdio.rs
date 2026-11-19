@@ -11,6 +11,7 @@ use std::{
 /// never a session's own client or a background collector.
 pub(in crate::delivery) struct StdioServer {
     child: Child,
+    executable: std::path::PathBuf,
     /// Ends the server's descendants with it, where the host can.
     job: Option<children::Job>,
     /// Writes go through a thread of their own, so a server that stops reading
@@ -28,17 +29,49 @@ impl StdioServer {
         environment: &BTreeMap<String, String>,
         timeout: Duration,
     ) -> Result<Self> {
-        let mut command = Command::new(executable);
-        command
-            .args(["app-server", "--listen", "stdio://"])
-            .envs(environment)
-            .env("CODEX_HOME", data)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        crate::os::configure_command(&mut command);
+        Self::open_selected(executable, false, data, environment, timeout)
+    }
+    pub fn open_route(
+        route: &super::super::QueueRoute,
+        data: &Path,
+        timeout: Duration,
+    ) -> Result<Self> {
+        if !route.discover_executable {
+            return Self::open(&route.executable, data, &route.environment, timeout);
+        }
+        Self::open_selected(
+            &route.executable,
+            route.discover_executable,
+            data,
+            &route.environment,
+            timeout,
+        )
+    }
+    /// The selected runtime is pinned once creation of the child succeeds.
+    pub fn executable(&self) -> &Path {
+        &self.executable
+    }
+    fn open_selected(
+        executable: &Path,
+        discover: bool,
+        data: &Path,
+        environment: &BTreeMap<String, String>,
+        timeout: Duration,
+    ) -> Result<Self> {
         let job = children::Job::new()?;
-        let mut child = command.spawn()?;
+        let (mut child, executable) =
+            children::spawn_codex(executable, discover, environment, |selected| {
+                let mut command = Command::new(selected);
+                command
+                    .args(["app-server", "--listen", "stdio://"])
+                    .envs(environment)
+                    .env("CODEX_HOME", data)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null());
+                crate::os::configure_command(&mut command);
+                command.spawn()
+            })?;
         if let Err(error) = job.assign(&child) {
             let _ = child.kill();
             let _ = child.wait();
@@ -89,6 +122,7 @@ impl StdioServer {
         });
         let mut server = Self {
             child,
+            executable,
             job: Some(job),
             input,
             written,

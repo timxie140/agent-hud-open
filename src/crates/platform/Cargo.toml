@@ -40,8 +40,9 @@ objc2-app-kit = { workspace = true, features = ["std", "NSRunningApplication"] }
 objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSString", "NSUserDefaults", "NSData", "NSDictionary"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+quick-xml = "=0.42.0"
 tokio = { version = "=1.53.3", features = ["rt", "net", "sync", "time", "io-util", "macros"] }
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile.workspace = true

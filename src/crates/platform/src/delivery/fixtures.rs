@@ -141,6 +141,7 @@ impl StartFixture {
             // Never executed: the fake runner answers instead.
             claude_executable: Some(self.root.join("bin/claude")),
             codex_executable: Some(self.root.join("bin/codex")),
+            discover_codex_executable: false,
             antigravity_executable: None,
             claude_desktop: false,
             codex_desktop: false,

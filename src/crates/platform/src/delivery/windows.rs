@@ -6,6 +6,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(crate) fn discover_codex_per_operation() -> bool {
+    crate::os::tracks_registered_codex()
+}
+
 /// Makes `path` a folder only this user can open (`crate::os::private_directory`).
 pub fn private_dir(path: &Path) -> Result<()> {
     crate::os::private_directory(path).map_err(Failure::Io)

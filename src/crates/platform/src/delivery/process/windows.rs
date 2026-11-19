@@ -6,6 +6,10 @@ use std::{
     process::{Child, ChildStderr, ChildStdout},
 };
 
+#[path = "windows/codex_runtime.rs"]
+mod codex_runtime;
+pub(super) use codex_runtime::spawn_codex;
+
 /// Windows pipes stay blocking: `drain` reads only what is already there.
 pub(super) fn prepare(
     _child: &mut Child,
