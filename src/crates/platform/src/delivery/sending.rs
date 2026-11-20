@@ -215,11 +215,11 @@ impl LocalClients {
         )
     }
 
-    pub fn codex_steer_ready(&self, thread: &str) -> Result<bool> {
+    pub fn codex_steer_ready(&self, thread: &str, remaining: Duration) -> Result<bool> {
         self.codex.steer_ready(
             &self.paths.codex_data,
             thread,
-            self.timeout.min(Duration::from_millis(150)),
+            self.timeout.min(Duration::from_millis(150)).min(remaining),
         )
     }
     pub fn cancel(

@@ -32,13 +32,13 @@ pub(super) fn enqueue(
         thread,
         text,
         message_id,
-        || can_wake(data, thread, timeout.min(Duration::from_millis(250))),
+        |rpc| can_wake(data, thread, timeout.min(Duration::from_millis(250)), rpc),
     );
     server.end();
     reason
 }
 
-fn can_wake(data: &Path, thread: &str, timeout: Duration) -> bool {
+fn can_wake(data: &Path, thread: &str, timeout: Duration, rpc: &mut impl QueueRpc) -> bool {
     match super::super::desktop::owned_snapshot(data, thread, timeout) {
         Ok(Some(state)) => {
             state["threadRuntimeStatus"]["type"] != "active"
@@ -46,12 +46,12 @@ fn can_wake(data: &Path, thread: &str, timeout: Duration) -> bool {
                 && match super::super::current_desktop_turn(&state) {
                     Ok(None) => true,
                     Ok(Some((_, status))) => {
-                        matches!(status.as_str(), "completed" | "interrupted" | "failed")
+                        matches!(status.as_str(), "completed" | "failed")
                     }
                     Err(_) => false,
                 }
         }
-        Ok(None) => no_writer(data, thread),
+        Ok(None) => unloaded_idle(data, thread, rpc),
         Err(Failure::Unavailable(reason))
             if [
                 "Codex Desktop endpoint unavailable (Windows error 2)",
@@ -59,13 +59,30 @@ fn can_wake(data: &Path, thread: &str, timeout: Duration) -> bool {
             ]
             .contains(&reason.as_str()) =>
         {
-            no_writer(data, thread)
+            unloaded_idle(data, thread, rpc)
         }
         Err(_) => false,
     }
 }
 
-fn no_writer(data: &Path, thread: &str) -> bool {
+fn unloaded_idle(data: &Path, thread: &str, rpc: &mut impl QueueRpc) -> bool {
+    // The desktop deliberately pauses its queue after an interruption.
+    // An unloaded thread with unfinished history is also unsafe to wake.
+    let Ok(result) = rpc.read(
+        "thread/turns/list",
+        json!({"threadId":thread,"limit":1,"sortDirection":"desc","itemsView":"notLoaded"}),
+    ) else {
+        return false;
+    };
+    let Some(turns) = result["data"].as_array() else {
+        return false;
+    };
+    match turns.as_slice() {
+        [] if result["nextCursor"].is_null() => {}
+        [turn] if matches!(turn["status"].as_str(), Some("completed" | "failed")) => {}
+        _ => return false,
+    }
+
     // A live writer or an unreadable lock keeps the queue untouched.
     let lock = data
         .join("thread-writer-locks")
@@ -78,13 +95,13 @@ fn no_writer(data: &Path, thread: &str) -> bool {
 
 /// `open` only requests native activation. Queue/start/receipt remain the
 /// desktop client's responsibility. A failure after add must not invite resend.
-fn enqueue_with(
-    rpc: &mut impl QueueRpc,
+fn enqueue_with<R: QueueRpc>(
+    rpc: &mut R,
     opener: &impl process::ProcessRunner,
     thread: &str,
     text: &str,
     message_id: &str,
-    can_wake: impl FnOnce() -> bool,
+    can_wake: impl FnOnce(&mut R) -> bool,
 ) -> Result<&'static str> {
     if !valid_uuid(thread) || message_id.is_empty() {
         return Err(Failure::InvalidInput("Codex queue identity".into()));
@@ -113,7 +130,7 @@ fn enqueue_with(
     if !matches_input(submission, message_id, text) {
         return Ok("Queued; native wake withheld because the accepted queue input is unverified");
     }
-    if !can_wake() {
+    if !can_wake(rpc) {
         return Ok("Queued; native wake withheld because the thread was not verified idle");
     }
     let verified = rpc

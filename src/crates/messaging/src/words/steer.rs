@@ -28,6 +28,12 @@ pub fn no_turn_to_steer(language: Language) -> String {
 pub fn steer_ready(language: Language) -> String {
     tr_in(language, "A turn is in progress; a steer goes into it.")
 }
+pub fn steer_unverified(language: Language) -> String {
+    tr_in(
+        language,
+        "No reachable Codex owner and active turn could be verified.",
+    )
+}
 /// list_sessions: an idle session.
 pub fn steer_idle(language: Language) -> String {
     tr_in(

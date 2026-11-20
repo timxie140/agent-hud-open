@@ -48,7 +48,8 @@ def publish(adapter, params):
         safe.append({'id': identifier, 'client': 'codex',
                      'title': str(row.get('title') or 'Codex')[:200],
                      'state': row.get('state') if row.get('state') in ('running', 'waiting', 'idle') else 'idle',
-                     'steerable': row.get('steerable') is True})
+                     'steerable': row.get('steerable') is True,
+                     'steerReason': str(row.get('steerReason') or '')[:240]})
     with adapter.db() as db:
         db.execute('INSERT INTO dot_sessions(singleton,enabled,checked,sessions,platform) VALUES(1,?,?,?,?) '
                    'ON CONFLICT(singleton) DO UPDATE SET enabled=excluded.enabled,checked=excluded.checked,sessions=excluded.sessions,platform=excluded.platform',

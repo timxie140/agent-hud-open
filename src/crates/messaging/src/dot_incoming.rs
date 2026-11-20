@@ -10,15 +10,16 @@ impl Messaging {
         let sessions: Vec<Value> = if self.preferences.enabled {
             let loaded = self.loaded();
             let language = language(host.snapshot);
+            let deadline = std::time::Instant::now() + listing::STEER_PROBE_BUDGET;
             sessions(host.snapshot)
                 .filter(|row| row["source"] == "codex")
                 .take(100)
                 .map(|row| {
                     let id = row["id"].as_str().unwrap_or_default();
-                    let (steerable, _) = self.steerable("codex", id, row, &loaded, language);
+                    let (steerable, reason) = self.steerable("codex", id, row, &loaded, language, deadline);
                     json!({"id":row["id"],"client":"codex","title":row["title"],
                         "state":match state(row) { "running" => "running", "waitingForApproval" => "waiting", _ => "idle" },
-                        "steerable":steerable})
+                        "steerable":steerable,"steerReason":reason})
                 }).collect()
         } else {
             Vec::new()
