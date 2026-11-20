@@ -125,15 +125,18 @@ impl LocalSocket {
                     Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
                         let left = deadline.saturating_duration_since(Instant::now());
                         if left.is_zero() {
-                            return Err(io::Error::from(io::ErrorKind::TimedOut));
+                            return Err(IpcError::TimedOut);
                         }
                         tokio::time::sleep(left.min(Duration::from_millis(10))).await;
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        return Err(IpcError::Endpoint(error.raw_os_error().unwrap_or(0)))
+                    }
                 }
             }
         })?;
-        validate_server(pipe.as_raw_handle())?;
+        validate_server(pipe.as_raw_handle())
+            .map_err(|e| IpcError::PeerValidation(e.raw_os_error().unwrap_or(5)))?;
         Ok(Self {
             pipe,
             runtime,

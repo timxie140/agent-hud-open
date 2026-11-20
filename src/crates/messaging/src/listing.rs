@@ -102,7 +102,7 @@ impl Messaging {
             _ => {}
         }
         let open = match provider {
-            Provider::Codex => delivery::codex_thread_open(&self.places.codex_data, id),
+            Provider::Codex => self.clients.codex_steer_ready(id).unwrap_or(false),
             _ => {
                 self.preferences.deepseek
                     && loaded.contains(id)

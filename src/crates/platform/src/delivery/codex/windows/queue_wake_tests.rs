@@ -79,7 +79,7 @@ fn fixture(
     )
 }
 fn invoke(rpc: &mut FakeRpc, opener: &FakeOpener) -> Result<&'static str> {
-    enqueue_with(rpc, opener, THREAD, TEXT, MESSAGE)
+    enqueue_with(rpc, opener, THREAD, TEXT, MESSAGE, || true)
 }
 fn methods(calls: &Calls) -> Vec<String> {
     calls
@@ -94,6 +94,21 @@ fn assert_no_wake(calls: &Calls) {
     assert!(methods(calls)
         .iter()
         .all(|method| matches!(method.as_str(), "thread/queue/list" | "thread/queue/add")));
+}
+
+#[test]
+fn a_new_queue_item_waits_if_its_thread_is_not_verified_idle() {
+    let (mut rpc, opener, calls) = fixture(
+        vec![Ok(list(vec![])), Ok(list(vec![item()]))],
+        Ok(added()),
+        false,
+    );
+    let reason = enqueue_with(&mut rpc, &opener, THREAD, TEXT, MESSAGE, || false).unwrap();
+    assert!(reason.contains("not verified idle"));
+    assert_eq!(
+        methods(&calls),
+        ["thread/queue/list", "thread/queue/add", "thread/queue/list"]
+    );
 }
 
 #[test]
@@ -258,7 +273,7 @@ fn invalid_thread_or_empty_message_id_never_calls_rpc_or_open() {
     for (thread, message_id) in [("not-a-uuid", MESSAGE), (THREAD, "")] {
         let (mut rpc, opener, calls) = fixture(vec![], Ok(added()), false);
         assert!(matches!(
-            enqueue_with(&mut rpc, &opener, thread, TEXT, message_id),
+            enqueue_with(&mut rpc, &opener, thread, TEXT, message_id, || true),
             Err(Failure::InvalidInput(_))
         ));
         assert!(calls.lock().unwrap().is_empty());
@@ -307,6 +322,7 @@ fn journal_retries_and_restart_never_repeat_queue_write_or_wake() {
                 THREAD,
                 &request.text,
                 &message_id,
+                || true,
             )?;
             Ok(Receipt {
                 provider: Provider::Codex,

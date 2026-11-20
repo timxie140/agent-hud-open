@@ -28,6 +28,21 @@ pub(crate) const OPERATIONS: &[Operation] = &[
     Operation::Interrupt,
 ];
 
+pub(super) fn steer_ready(data: &Path, thread: &str, _: Duration) -> Result<bool> {
+    Ok(super::thread_open(data, thread))
+}
+
+pub(super) fn persisted_input(
+    _: Option<&QueueRoute>,
+    _: &Path,
+    _: &SessionTarget,
+    _: &str,
+    _: &str,
+    _: Duration,
+) -> Result<Option<ReceivedInput>> {
+    Ok(None)
+}
+
 pub(super) fn deliver(
     data: &Path,
     target: &SessionTarget,

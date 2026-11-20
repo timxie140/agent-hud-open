@@ -9,12 +9,15 @@ impl Messaging {
         }
         let count = waiting.len();
         waiting.rotate_left(self.receipt_cursor % count);
-        self.receipt_cursor = (self.receipt_cursor + 8) % count;
-        for message in waiting.into_iter().take(8) {
+        // At most one App Server read per pass. Rotate by one so every
+        // pending receipt eventually gets a chance to use it.
+        self.receipt_cursor = (self.receipt_cursor + 1) % count;
+        for (index, message) in waiting.into_iter().take(8).enumerate() {
             let Ok(Some(input)) = self.clients.received_input(
                 &message.to.session_id,
                 &message.request_id,
                 &message.fingerprint,
+                index == 0,
             ) else {
                 continue;
             };

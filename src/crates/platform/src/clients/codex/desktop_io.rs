@@ -23,6 +23,8 @@ use windows::{random as fill_random, Frame};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IpcError {
     Unavailable,
+    Endpoint(i32),
+    PeerValidation(i32),
     TimedOut,
     Protocol,
     Rejected(String),
@@ -34,6 +36,14 @@ impl std::fmt::Display for IpcError {
         use agent_hud_core::l10n::tr;
         match self {
             Self::Unavailable => f.write_str(&tr!("Codex could not be reached")),
+            Self::Endpoint(code) => write!(
+                f,
+                "Codex Desktop endpoint unavailable (Windows error {code})"
+            ),
+            Self::PeerValidation(code) => write!(
+                f,
+                "Codex Desktop peer validation failed (Windows error {code})"
+            ),
             Self::TimedOut => f.write_str(&tr!("Codex did not answer in time")),
             Self::Protocol => f.write_str(&tr!("Codex answered in a way Agent HUD cannot read")),
             Self::Rejected(reason) => f.write_str(&tr!(

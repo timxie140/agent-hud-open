@@ -32,9 +32,47 @@ pub(super) fn enqueue(
         thread,
         text,
         message_id,
+        || can_wake(data, thread, timeout.min(Duration::from_millis(250))),
     );
     server.end();
     reason
+}
+
+fn can_wake(data: &Path, thread: &str, timeout: Duration) -> bool {
+    match super::super::desktop::owned_snapshot(data, thread, timeout) {
+        Ok(Some(state)) => {
+            !super::super::desktop::turn_waits_on_user(&state)
+                && match super::super::current_desktop_turn(&state) {
+                    Ok(None) => true,
+                    Ok(Some((_, status))) => {
+                        matches!(status.as_str(), "completed" | "interrupted" | "failed")
+                    }
+                    Err(_) => false,
+                }
+        }
+        Ok(None) => no_writer(data, thread),
+        Err(Failure::Unavailable(reason))
+            if [
+                "Codex Desktop endpoint unavailable (Windows error 2)",
+                "Codex Desktop endpoint unavailable (Windows error 3)",
+            ]
+            .contains(&reason.as_str()) =>
+        {
+            no_writer(data, thread)
+        }
+        Err(_) => false,
+    }
+}
+
+fn no_writer(data: &Path, thread: &str) -> bool {
+    // A live writer or an unreadable lock keeps the queue untouched.
+    let lock = data
+        .join("thread-writer-locks")
+        .join(format!("{thread}.lock"));
+    match std::fs::File::open(lock) {
+        Ok(file) => file.try_lock_shared().is_ok(),
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    }
 }
 
 /// `open` only requests native activation. Queue/start/receipt remain the
@@ -45,6 +83,7 @@ fn enqueue_with(
     thread: &str,
     text: &str,
     message_id: &str,
+    can_wake: impl FnOnce() -> bool,
 ) -> Result<&'static str> {
     if !valid_uuid(thread) || message_id.is_empty() {
         return Err(Failure::InvalidInput("Codex queue identity".into()));
@@ -87,6 +126,9 @@ fn enqueue_with(
         return Ok(
             "Queued; native wake withheld because the queue changed or could not be verified",
         );
+    }
+    if !can_wake() {
+        return Ok("Queued; native wake withheld because the thread was not verified idle");
     }
     // A different client can still change the queue after this read: Codex has
     // no atomic wake-if-head-is API. Never claim that opening the URI ran it.
