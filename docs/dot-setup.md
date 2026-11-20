@@ -97,9 +97,9 @@ HTTPS、公网地址和签名；代理方式仍将 callback 固定到已验证�
 
 ## 4. Codex 像给 DSH 一样发送
 
-DSH 通过本机原生 `send_message` 发给 Codex（包括 `reply_to` 回信）时，运行中的可验证 Desktop 聊天自动 steer，空闲或确认无 owner 时 queued；拒绝或不确定时不改走队列重发。
+自 0.6.8-dot.1 起，本机原生 `send_message` 和 Dot 的 `hud_send_message` 均默认 `delivery: "queue"`。只有用户明确要求，且当前目标支持并正在运行时，发送方才传 `delivery: "steer"`。回复不允许 steer；拒绝或不确定时不换模式重发。
 
-Windows 自动投递会在确认原队列为空、入队后仅包含本条原始消息时，请求原生 Codex 唤醒该线程；有旧队列或核对不确定时保持排队。唤醒请求不等于已启动或已收件，仍需实际输入与回执验证。参见 [Windows 队列唤醒](windows-codex-queue-wake.md)。
+旧版“忙时自动 steer、闲时唤醒”的实验策略不再用于默认投递。升级后需正常重启 DSH 一次以加载官方支持 steer 的插件，并在原客户端刷新已有原生 MCP 工具目录。Dot 在原插件详情刷新目录；若原 Dot 仍看不到 delivery 参数，可在同一对话执行 reboot dot。不要新建替代聊天或重复订阅。
 
 使用 HUD 已有工具：
 

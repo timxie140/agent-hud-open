@@ -1,5 +1,5 @@
 //! Current-user MSIX discovery through native APIs, without a shell or TTL.
-//! No unmatched old runtime cache or alternative PATH CLI is used in this mode.
+//! A registered app is resolved by identity; otherwise discover the CLI anew.
 use super::*;
 use std::{collections::BTreeMap, ffi::OsString, os::windows::ffi::OsStringExt};
 use windows_sys::Win32::Storage::Packaging::Appx::{
@@ -8,16 +8,14 @@ use windows_sys::Win32::Storage::Packaging::Appx::{
 
 const UNAVAILABLE: &str = "Current registered Codex runtime unavailable; no input submitted";
 
-pub(crate) fn tracks_registered_codex() -> bool {
-    // An indeterminate registration must not pin a possibly stale path forever.
-    // A genuine standalone CLI installation retains its original fixed routing.
-    registered_root().map(|root| root.is_some()).unwrap_or(true)
-}
-
-pub(crate) fn discover_live_codex(
-    _overrides: &BTreeMap<String, String>,
-) -> Result<PathBuf, String> {
-    let root = registered_root()?.ok_or(UNAVAILABLE)?;
+pub(crate) fn discover_live_codex(overrides: &BTreeMap<String, String>) -> Result<PathBuf, String> {
+    let Some(root) = registered_root()? else {
+        let home = super::super::home_dir().map_err(|_| UNAVAILABLE)?;
+        let mut env: Environment = std::env::vars().collect();
+        env.extend(overrides.clone());
+        return super::super::super::find_engine(&home, &env, "codex")
+            .ok_or_else(|| UNAVAILABLE.into());
+    };
     let path = root.join("AppxManifest.xml");
     if fs::metadata(&path).map_err(|_| UNAVAILABLE)?.len() > 1024 * 1024 {
         return Err(UNAVAILABLE.into());

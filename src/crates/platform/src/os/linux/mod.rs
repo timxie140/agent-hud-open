@@ -1,6 +1,6 @@
 pub(crate) use super::unix::{
-    environment_value, hook_configuration, hook_text, is_shell, owned_by_user, owner_only,
-    private_append, private_directory, private_file, read_stdin,
+    engine_command, environment_value, hook_configuration, hook_text, is_shell, owned_by_user,
+    owner_only, private_append, private_directory, private_file, read_stdin, user_transcript,
 };
 use super::{config_home, data_home, joined_path, path_entries, Environment, ProcessInfo};
 use std::{
@@ -11,7 +11,13 @@ mod apps;
 mod process;
 mod secrets;
 pub(crate) use apps::{activate_app, app_running, launch_app, ACTIVATES_APPS};
-pub(crate) use process::{codex_cli_on_port, parent_processes, process_runs};
+pub(crate) use process::{
+    codex_cli_on_port, parent_processes, process_runs, process_start, terminal_io,
+};
+/// No application bundles here: an MCP call is matched by its own parent.
+pub(crate) fn app_ancestors(_pid: u32) -> Vec<u32> {
+    Vec::new()
+}
 pub(crate) use secrets::{app_cookie, stored_secret, unseal_safe_storage};
 pub(crate) const READS_PROCESS_ENVIRONMENT: bool = false;
 /// Claude has no desktop app on this host to take a background job in.
@@ -88,6 +94,8 @@ pub(crate) fn executable_dirs(home: &Path, env: &Environment) -> Vec<PathBuf> {
         home.join(".local/bin"),
         home.join(".bun/bin"),
         home.join(".npm-global/bin"),
+        home.join(".kimi-code/bin"),
+        home.join(".zcode/bin"),
         "/usr/local/bin".into(),
         "/usr/bin".into(),
         "/bin".into(),
@@ -101,7 +109,20 @@ pub(crate) fn engine_executable(path: &Path) -> bool {
     super::unix::executable(path)
 }
 pub(crate) fn configure_command(_command: &mut Command) {}
+pub(crate) fn spawn(command: &mut Command) -> std::io::Result<std::process::Child> {
+    command.spawn()
+}
 pub(crate) fn engine_candidates(home: &Path, env: &Environment, name: &str) -> Vec<PathBuf> {
+    if name == "workbuddy-app" {
+        // Only WorkBuddy's own install, never whatever else carries the name.
+        return [
+            "/usr/bin/workbuddy",
+            "/opt/workbuddy/workbuddy",
+            "/opt/WorkBuddy/workbuddy",
+        ]
+        .map(PathBuf::from)
+        .to_vec();
+    }
     let mut paths = vec![
         home.join(".local/bin").join(name),
         home.join(".bun/bin").join(name),
@@ -114,6 +135,10 @@ pub(crate) fn engine_candidates(home: &Path, env: &Environment, name: &str) -> V
         ));
     }
     paths.extend(path_entries(env).into_iter().map(|dir| dir.join(name)));
+    if name == "opencode" {
+        // OpenCode's install script's folder.
+        paths.push(home.join(".opencode/bin/opencode"));
+    }
     paths
 }
 pub(crate) fn engine_path(home: &Path, env: &Environment) -> String {
@@ -173,6 +198,11 @@ pub(crate) fn open_url_in_app(_bundle_id: &str, _url: &str) -> bool {
     false
 }
 
+/// Not implemented on this host: links open in the system's browser.
+pub(crate) fn default_browser() -> Option<String> {
+    None
+}
+
 pub(crate) fn open_session_url(url: &str) -> Result<(), String> {
     super::unix::spawn_script(
         include_str!("../../../scripts/linux/open-session-url.sh"),
@@ -193,11 +223,6 @@ pub(crate) const SOCKET_SEND_FLAGS: libc::c_int = libc::MSG_NOSIGNAL;
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn url_handler_discovery_is_unavailable() {
-        assert!(!super::registered_url("dsh://open"));
-    }
-
     #[test]
     fn an_appimage_names_its_image_file_not_its_mount() {
         let directory = tempfile::tempdir().unwrap();

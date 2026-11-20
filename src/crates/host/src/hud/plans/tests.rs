@@ -54,3 +54,39 @@ fn a_strip_is_as_wide_as_geometry_ts_draws_it() {
         66.0
     );
 }
+
+#[test]
+fn a_screen_reads_its_own_hide_switch() {
+    let view = view(json!({"hidden": true}), json!({}));
+    assert!(Screen::new(&view, "a", false).flag("hidden"));
+    assert!(!Screen::new(&view, "b", false).flag("hidden"));
+}
+
+#[test]
+fn shortest_window_first_counts_only_on_a_simple_dock_with_numbers() {
+    let on = |own: Value, has_notch: bool| {
+        let view = view(own, json!({}));
+        Screen::new(&view, "a", has_notch).shortest_window_first()
+    };
+    // The defaults draw segments with numbers beside them.
+    assert!(on(
+        json!({"mode": "simple", "shortestWindowFirst": true}),
+        false
+    ));
+    assert!(!on(json!({"mode": "simple"}), false));
+    // A Notch writes no numbers, and a dock without them has none to move.
+    assert!(!on(
+        json!({"mode": "notch", "shortestWindowFirst": true}),
+        true
+    ));
+    assert!(!on(json!({"shortestWindowFirst": true}), true));
+    assert!(!on(
+        json!({"mode": "simple", "showsNumbers": false, "shortestWindowFirst": true}),
+        false
+    ));
+    assert!(on(
+        json!({"mode": "simple", "simpleStyle": "numbers", "showsNumbers": false,
+            "shortestWindowFirst": true}),
+        false
+    ));
+}

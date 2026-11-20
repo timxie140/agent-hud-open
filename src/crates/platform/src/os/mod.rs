@@ -22,6 +22,51 @@ mod unix;
 #[cfg(target_os = "macos")]
 pub use target::registered_applications;
 pub(crate) use target::*;
+#[cfg(target_os = "windows")]
+pub(crate) use target::{bring_window_forward, is_main_window};
+
+/// A folder that only passes short-lived words between the app and a
+/// client's plugin or hooks. One another account made, as an elevated run or
+/// a copied data folder leaves behind, is set aside under a new name and made
+/// again: the app never takes over what another account owns, and nothing in
+/// such a folder outlives a minute.
+pub(crate) fn channel_directory(path: &Path) -> Result<(), String> {
+    let Err(error) = private_directory(path) else {
+        return Ok(());
+    };
+    let foreign = std::fs::symlink_metadata(path).is_ok_and(|metadata| {
+        metadata.is_dir() && !metadata.is_symlink() && !owned_by_user(path, &metadata)
+    });
+    if !foreign {
+        return Err(error);
+    }
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let aside = path.with_file_name(format!("{name}.other-owner-{at}"));
+    std::fs::rename(path, &aside).map_err(|_| {
+        format!(
+            "{} belongs to another account and could not be moved aside. Give it to this user or delete it, then start Agent HUD again.",
+            path.display()
+        )
+    })?;
+    private_directory(path)
+}
+
+/// The outermost application bundle a path lies in: `/Applications/Trae.app`
+/// for its main program and for a helper inside its `Frameworks` alike.
+pub(crate) fn outer_bundle(path: &Path) -> Option<PathBuf> {
+    let mut bundle = PathBuf::new();
+    for part in path.components() {
+        bundle.push(part);
+        if part.as_os_str().to_string_lossy().ends_with(".app") {
+            return Some(bundle);
+        }
+    }
+    None
+}
 
 /// The directory a client's variable moves its files to: the value without
 /// the whitespace around it, used as written, as the clients themselves read
@@ -137,6 +182,8 @@ impl agent_hud_agents::claude::processes::Pids for HostPids {
 }
 /// A parent process of this one, as the kernel reports it.
 pub(crate) struct ProcessAncestor {
+    /// None where the host does not report it (Windows).
+    pub pid: Option<u32>,
     pub executable: PathBuf,
     pub arguments: Vec<String>,
     /// The application bundle identifier, on hosts that have bundles.
@@ -236,6 +283,7 @@ mod tests {
             ("devin", ".local/share/devin/cli"),
             ("kilo", ".local/share/kilo"),
             ("mimocode", ".local/share/mimocode"),
+            ("teleagent", ".local/share/TeleAgent"),
             ("omp", ".omp/agent/sessions"),
             ("droid", ".factory/sessions"),
             ("cline", ".cline/data/sessions"),
@@ -283,5 +331,28 @@ mod tests {
             home.join(".local/share/goose/sessions")
         };
         assert_eq!(goose, [expected]);
+    }
+}
+
+#[cfg(test)]
+mod bundle_tests {
+    use super::outer_bundle;
+
+    #[test]
+    fn a_helper_and_its_app_share_the_outermost_bundle() {
+        // Absolute on every OS; nothing here is created.
+        let root = std::env::temp_dir().join("agent-hud-bundles");
+        let trae = root.join("Applications/Trae.app");
+        assert_eq!(
+            outer_bundle(&trae.join("Contents/MacOS/Electron")),
+            Some(trae.clone())
+        );
+        assert_eq!(
+            outer_bundle(&trae.join(
+                "Contents/Frameworks/Trae Helper (Plugin).app/Contents/MacOS/Trae Helper (Plugin)"
+            )),
+            Some(trae)
+        );
+        assert_eq!(outer_bundle(&root.join("me/.kimi-code/bin/kimi")), None);
     }
 }

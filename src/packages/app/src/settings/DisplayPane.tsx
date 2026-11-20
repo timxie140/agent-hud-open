@@ -1,14 +1,14 @@
-/* Settings → Display: the HUD and its panel on the screen picked at the top,
- * then what every screen shares, then the resets. Each section lives in
- * ./display. */
+/* Settings → Display: the screen picked at the top and what its HUD shows at
+ * all, the HUD and its panel there, then what every screen shares, then the
+ * resets. Each section lives in ./display. */
 import { defaultHUDConfig } from "@agent-hud/hud/model";
+import { useT } from "@agent-hud/ui/format-context";
 import type { NativeHUDMonitor } from "../lib/use-hud-geometry";
-import { Menu } from "./SettingsControls";
+import { Menu, ToggleRow } from "./SettingsControls";
 import {
   Page,
   Row,
   Section,
-  useText,
   type SettingsPaneProps,
 } from "./SettingsPrimitives";
 import { AllScreensSection } from "./display/AllScreensSection";
@@ -31,27 +31,35 @@ export function DisplayPane({
   onSelectScreen: (id: string) => void;
 }) {
   const config = { ...defaultHUDConfig, ...supplied },
-    t = useText(snapshot);
+    t = useT();
   const screenName = (monitor: NativeHUDMonitor) =>
-    monitor.name || `${t("Screen", "屏幕")} ${monitor.index + 1}`;
+    monitor.name || t("Screen {{number}}", { number: monitor.index + 1 });
   const selected =
     monitors.length > 1
       ? monitors.find((monitor) => monitor.screenId === selectedScreenId)
       : undefined;
+  const several = monitors.length > 1;
   const shared = { config, update, t };
   return (
     <Page>
-      {monitors.length > 1 && (
-        <Section>
+      <Section
+        title={t("On this screen")}
+        footer={
+          config.hidden
+            ? t(
+                "Nothing shows here, cards included. The menu bar's Hide HUD still turns it off on every screen.",
+              )
+            : undefined
+        }
+      >
+        {several && (
           <Row
-            title={t("Screen", "屏幕")}
-            subtitle={t(
-              "The screen whose HUD you're setting up.",
-              "正在设置哪块屏幕上的 HUD。",
-            )}
+            anchor="screen-picker"
+            title={t("Screen")}
+            subtitle={t("The screen whose HUD you're setting up.")}
           >
             <Menu
-              label={t("Screen", "屏幕")}
+              label={t("Screen")}
               value={selectedScreenId}
               options={monitors.map((monitor) => [
                 monitor.screenId,
@@ -61,8 +69,49 @@ export function DisplayPane({
               width={200}
             />
           </Row>
-        </Section>
-      )}
+        )}
+        <ToggleRow
+          title={t("Show the HUD on this screen")}
+          checked={!config.hidden}
+          change={(value) => update({ hidden: !value })}
+        />
+        {!config.hidden && (
+          <>
+            {snapshot?.connection.platform === "macos" && (
+              <ToggleRow
+                title={t("Hide in full screen")}
+                subtitle={t(
+                  "While an app or video is full screen on this screen. The HUD comes back when it exits.",
+                )}
+                checked={config.hidesInFullScreen}
+                change={(value) => update({ hidesInFullScreen: value })}
+              />
+            )}
+            <ToggleRow
+              title={t("Messages")}
+              subtitle={t(
+                "Cards for what agents say, and the tail that keeps them.",
+              )}
+              checked={!config.hidesMessages}
+              change={(value) => update({ hidesMessages: !value })}
+            />
+            <ToggleRow
+              title={t("Requests")}
+              subtitle={t(
+                "Cards that ask you to approve or answer, and the head that keeps them.",
+              )}
+              checked={!config.hidesRequests}
+              change={(value) => update({ hidesRequests: !value })}
+            />
+            <ToggleRow
+              title={t("Agent messages in flight")}
+              subtitle={t("The paper plane when one agent messages another.")}
+              checked={!config.hidesFlights}
+              change={(value) => update({ hidesFlights: !value })}
+            />
+          </>
+        )}
+      </Section>
       <HUDSection snapshot={snapshot} active={active} {...shared} />
       <GlowSection {...shared} />
       <PanelSection snapshot={snapshot} {...shared} />

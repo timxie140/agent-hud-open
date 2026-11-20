@@ -16,6 +16,8 @@ import { SIMPLE_EDGE_MARGIN } from "./simple-panel";
 import { useNotchGeometry } from "./NotchSurface";
 import { useRequestDelivery } from "./request-delivery";
 import { snapshotLanguage } from "@agent-hud/ui/format";
+import { hudGround } from "./hud-ground";
+export { hudGround } from "./hud-ground";
 
 export interface UseHUDLayoutArgs {
   config: HUDConfig;
@@ -71,17 +73,10 @@ export function useHUDLayout({
   const light =
     config.appearance === "light" ||
     (config.appearance === "system" && systemLight);
-  // Transparency runs the ground from opaque to fully clear. Its outline and
-  // shadow belong to the ground and fade with it; logos, bots and text are
-  // drawn over it at full strength.
-  const surfaceAlpha = 1 - config.solidTransparency;
-  const fill = light
-    ? `rgba(245,245,247,${surfaceAlpha})`
-    : `rgba(0,0,0,${surfaceAlpha})`;
-  const outline = light
-    ? `rgba(0,0,0,${0.106 * surfaceAlpha})`
-    : `rgba(255,255,255,${0.075 * surfaceAlpha})`;
-  const shadow = `0 9px 30px rgba(0,0,0,${0.133 * surfaceAlpha})`;
+  const { fill, outline, shadow } = hudGround(
+    light,
+    1 - config.solidTransparency,
+  );
 
   // The agent the card is for: the sender of the event on show, otherwise the hovered mark. A dock never gives
   // its marks up to an event, so hovering another mark does not move an event's card (ScreenHUD.focus).
@@ -97,8 +92,11 @@ export function useHUDLayout({
 
   const delivery = useRequestDelivery(snapshot, request, focusedVendor?.key);
 
+  // The inspector, like a message, is a card of its own beside the dock;
+  // only the notch grows it out of itself.
   const detached =
-    config.mode !== "notch" && Boolean(focusedVendor || standaloneAlert);
+    config.mode !== "notch" &&
+    Boolean(focusedVendor || standaloneAlert || ends.view === "clip");
   const peek = Boolean(
     open && detached && !pinned && !standaloneAlert && focusedVendor,
   );
@@ -111,19 +109,24 @@ export function useHUDLayout({
     ? HUD_METRICS.expandedFlare
     : HUD_METRICS.collapsedFlare;
   const flared = !detached && config.mode !== "simple";
-  const fullWidth = standaloneAlert
-    ? 470
-    : focusedVendor
-      ? Math.max(440, config.panelWidth - 100)
-      : !horizontal(edge) && !detached
-        ? Math.min(
-            screen.width - 16,
-            Math.max(
-              config.panelWidth,
-              404 + metrics.width + 12 + surfaceFlare + 16,
-            ),
-          )
-        : config.panelWidth;
+  // The inspector keeps narrow; out of the notch it is a card beside the
+  // dock, at any edge.
+  const fullWidth =
+    ends.view === "clip"
+      ? 380 + (detached || horizontal(edge) ? 0 : metrics.width + 12)
+      : standaloneAlert
+        ? 470
+        : focusedVendor
+          ? Math.max(440, config.panelWidth - 100)
+          : !horizontal(edge) && !detached
+            ? Math.min(
+                screen.width - 16,
+                Math.max(
+                  config.panelWidth,
+                  404 + metrics.width + 12 + surfaceFlare + 16,
+                ),
+              )
+            : config.panelWidth;
   // On a side edge the line starts behind the dock, so it reads as the dock growing; that side carries no text.
   const peekTuck =
     simplePeek && !horizontal(edge) ? Math.round(strip.width / 2) : 0;
@@ -132,7 +135,7 @@ export function useHUDLayout({
       ? peekLineWidth(
           focusedVendor,
           scale,
-          snapshotLanguage(snapshot) === "zh",
+          snapshotLanguage(snapshot),
           peekTuck,
           snapshot.settings.quotaDisplay,
         )
@@ -149,7 +152,7 @@ export function useHUDLayout({
                     event,
                     requestsCount,
                     scale,
-                    snapshotLanguage(snapshot) === "zh",
+                    snapshotLanguage(snapshot),
                   ),
                   screen.width,
                 ),
@@ -224,20 +227,24 @@ export function useHUDLayout({
     reduceMotion || dragging,
   );
 
+  // Cards carry their own padding, so the panel around them keeps less.
+  const carded = config.panelLayout.style?.separators !== false;
+  const side = carded ? 10 : 18;
+  const end = carded ? 10 : 14;
   const bodyPadding = detached
-    ? { top: 14, right: 18, bottom: 14, left: 18 }
+    ? { top: end, right: side, bottom: end, left: side }
     : config.mode === "notch"
       ? {
           top: 32 + (config.hasNotch && light ? 14 : 0),
-          right: 18,
-          bottom: 14,
-          left: 18,
+          right: side,
+          bottom: end,
+          left: side,
         }
       : {
-          top: edge === "top" ? metrics.height + 12 : 14,
-          right: edge === "right" ? metrics.width + 12 : 18,
-          bottom: edge === "bottom" ? metrics.height + 12 : 14,
-          left: edge === "left" ? metrics.width + 12 : 18,
+          top: edge === "top" ? metrics.height + 12 : end,
+          right: edge === "right" ? metrics.width + 12 : side,
+          bottom: edge === "bottom" ? metrics.height + 12 : end,
+          left: edge === "left" ? metrics.width + 12 : side,
         };
   const surfacePadding = {
     top: bodyPadding.top + (flared && !horizontal(edge) ? surfaceFlare : 0),

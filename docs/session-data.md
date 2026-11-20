@@ -35,6 +35,17 @@ authoritative event exists. Scope membership, ordering and non-running day
 groups use this time. Raw checkpoint timestamps remain separate for ingestion
 and duplicate resolution; this presentation rule does not change token accounting.
 
+Copies of one log (moved to an archive folder, compressed) count once. Codex
+goes on with a conversation in a new rollout when it rewinds the history after
+a stopped turn: `rollout-<time>-<id>_<segment>.jsonl`, with the same
+`session_meta` id and a `history_base` pointing into the rollout before it.
+Every segment's calls count toward the session: its row, its page's tokens,
+breakdown and calls, and Statistics, which ranks it as one session. Lists show
+it once, under its newest segment; its page starts when its first segment did.
+Its messages read on from one segment into the next, as one run of cursors:
+Codex never writes to an earlier segment again, so a cursor taken before the
+split still finds the same line after it.
+
 A session's `client` is the client that drives it, as its log names it
 ("Codex Desktop", "Claude Code IDE extension"). Devin CLI and Devin Desktop's
 Devin Local write one store, `~/.local/share/devin/cli/sessions.db`, which
@@ -111,19 +122,21 @@ a call in more than one place, the best one counts it and the others give way.
 
 | Client | Sessions and live state | Tokens |
 | --- | --- | --- |
-| Qoder, Qoder CN, QoderWork | Claude Code's lines in `projects/<folder>/<session>.jsonl` under `~/.qoder` (`QODER_CONFIG_DIR`), `~/.qoder-cn` (`QODERCN_CONFIG_DIR`), `~/.qoderwork` and the Qoder app's `SharedClientCache/cli/projects`; sub-agents in `<session>/subagents/`. A session's id is the one its hooks report. Each build is a client of its own. | Each response's usage; Qoder's `input_tokens` holds its cache reads, which count apart. Qoder CN's older `QoderCN/SharedClientCache/cache/db/local.db` adds its assistant messages. A response billed only in credits has no tokens. |
+| Qoder, Qoder CN, QoderWork | Claude Code's lines in `projects/<folder>/<session>.jsonl` under `~/.qoder` (`QODER_CONFIG_DIR`), `~/.qoder-cn` (`QODERCN_CONFIG_DIR`), `~/.qoderwork` and the older Qoder IDE's `SharedClientCache/cli/projects`; the Qoder desktop app (0.5) runs qodercli's own runtime and writes to `~/.qoder` like the CLI. Sub-agents in `<session>/subagents/`. A session's id is the one its hooks report; it is titled by what the person first typed (`humanInput.text`), and a message another session sent (`origin.kind: "peer"`) is a prompt of its own. Each build is a client of its own. | Each response's usage; Qoder's `input_tokens` holds its cache reads, which count apart. Qoder CLI 1.1.85 writes tokens only for a model of the user's own key or with `QODER_EXPOSE_TOKEN_USAGE` set, and otherwise records `usage.credits`: such a response has no tokens, and its model is the one the reply names (`auto`). Qoder CN's older `QoderCN/SharedClientCache/cache/db/local.db` adds its assistant messages. |
 | Copilot CLI | `session-state/<session>/events.jsonl` under `~/.copilot` (`COPILOT_HOME`). | `session-store.db`'s `assistant_usage_events`, one row per call (its input holds the cache's reads and writes, its output the reasoning); else the OTel export's chat spans; else the `session.shutdown` totals, each counted by what it adds. The first store row of a session replaces what the others counted. The Copilot desktop app's `data.db` is not read: its sessions keep `session-state` too. |
 
 ## Forks read with their parents' readers
 
-Kilo Code and MiMo Code keep OpenCode's database, and Oh My Pi keeps Pi's
-logs, each under folders of its own. Each is its own source, with its own
-session ids (`kilo:`, `mimocode:`, `omp:`), read by its parent's reader:
+Kilo Code, MiMo Code and TeleAgent keep OpenCode's database, and Oh My Pi
+keeps Pi's logs, each under folders of its own. Each is its own source, with
+its own session ids (`kilo:`, `mimocode:`, `teleagent:`, `omp:`), read by its
+parent's reader:
 
 | Client | Sessions | Left out |
 | --- | --- | --- |
 | Kilo Code | `$XDG_DATA_HOME/kilo/kilo.db` | Tasks moved in from the VS Code extension (`ses_migrated_*`, no tokens); the JSON files it copied into the database; rows whose data is not JSON |
 | MiMo Code | `$XDG_DATA_HOME/mimocode/mimocode.db` | Messages imported from Claude Code, Codex or OpenCode (`external_import`), which are read where they were made; the made-up title "Untitled" |
+| TeleAgent | `$XDG_DATA_HOME/TeleAgent/users/<account>/teleagent.db`, one per signed-in account | Nothing of its own; it loads no OpenCode plugin, so its sessions show tokens without live state |
 | Oh My Pi | `~/.omp/agent/sessions` | Entries a moved or forked session copied from the one it continues (older than its header); the copies `omp gc --compress` stages in `.omp-gc-compress-*`; calls outside the conversation (`model_usage`) count, without changing the session's model |
 
 Not read: Kilo Code's and MiMo Code's release-channel databases

@@ -1,3 +1,5 @@
+> Historical implementation notes for 0.6.1-dot.2. In 0.6.8-dot.1, public messaging follows upstream: default queue, explicit authorized delivery=steer, no implicit steer-or-start. See docs/dot-setup.md.
+
 # Windows Codex queue activation
 
 Windows automatic HUD delivery (`steer-or-enqueue`, used for Dot and native

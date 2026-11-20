@@ -1,15 +1,203 @@
-//! A TRAE account's entitlements: the short-lived token traded for the kept
-//! session, the entitlement list asked with it, and its credits summary.
+//! A TRAE or TRAE CN account's entitlements: queried either with the client's
+//! own `Cloud-IDE-JWT` token or with the web session's `GetUserToken` exchange.
+use super::byte_crypto::LocalAuth;
+use super::parse::{parse, unwrap, Summary};
 use super::Api;
-use crate::account::{status, Host, HttpFailure, HttpRequest, Unread, WebSession, WebSite};
-use crate::l10n;
+use crate::account::{Host, HttpFailure, HttpRequest, Unread, WebSession};
+use crate::l10n::tr;
 use serde_json::{json, Value};
 use std::time::Duration;
 
-/// The site's entitlements, from the first of its API hosts that knows the
-/// session. A host that cannot be reached stops the reading there: only the
-/// hosts that answered can say the user signed out.
-pub(super) fn entitlements(
+const LOCAL_UA: &str = "Trae/1.0.0";
+
+pub(super) fn entitlements_local(
+    host: &dyn Host,
+    api: &Api,
+    auth: &LocalAuth,
+) -> Result<Summary, Unread> {
+    let base = local_base(api, auth);
+    let authorization = format!("Cloud-IDE-JWT {}", auth.token);
+    let headers = [
+        ("Accept", "application/json, text/plain, */*"),
+        ("User-Agent", LOCAL_UA),
+    ];
+    let name = api.site.name;
+    let refused = |failure: HttpFailure| match failure {
+        HttpFailure::Status(401 | 403) => local_signed_out(name),
+        other => other.unread(),
+    };
+    let mut summary = if api.china {
+        query_china_local(host, api, &base, &authorization, &headers, refused)?
+    } else {
+        query_global_local(host, api, &base, &authorization, &headers, refused)?
+    };
+    if summary.plan.is_none() {
+        let pay_path = if api.china {
+            "/trae/api/v2/pay/ide_user_pay_status"
+        } else {
+            "/trae/api/v1/pay/ide_user_pay_status"
+        };
+        if let Ok(status_body) = post_local(
+            host,
+            &format!("{base}{pay_path}"),
+            &authorization,
+            &headers,
+            &json!({}),
+        ) {
+            if let Some(identity) = unwrap(&status_body)["user_pay_identity_str"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                summary.plan = Some(identity.to_owned());
+            }
+        }
+    }
+    summary.email = auth.email.clone();
+    Ok(summary)
+}
+
+fn query_china_local(
+    host: &dyn Host,
+    api: &Api,
+    base: &str,
+    authorization: &str,
+    headers: &[(&str, &str)],
+    refused: impl Fn(HttpFailure) -> Unread,
+) -> Result<Summary, Unread> {
+    let name = api.site.name;
+    let req = json!({"require_usage": true, "req_source": 2});
+    let usage = post_local(
+        host,
+        &format!("{base}/trae/api/v2/pay/ide_user_ent_usage"),
+        authorization,
+        headers,
+        &req,
+    )
+    .or_else(|failure| match failure {
+        HttpFailure::Status(404) => post_local(
+            host,
+            &format!("{base}/trae/api/v1/pay/ide_user_ent_usage"),
+            authorization,
+            headers,
+            &req,
+        ),
+        other => Err(other),
+    })
+    .map_err(&refused)?;
+    check_code(&usage, name, true)?;
+    if let Some(s) = parse(&usage) {
+        if unwrap(&usage)["is_credits_billing"] == true || !s.unlimited() {
+            return Ok(s);
+        }
+    }
+    let list = post_local(
+        host,
+        &format!("{base}{}", api.list),
+        authorization,
+        headers,
+        &json!({"require_usage": true, "full_data": true}),
+    )
+    .map_err(refused)?;
+    check_code(&list, name, true)?;
+    parse(&list)
+        .or_else(|| parse(&usage))
+        .ok_or_else(|| Unread::from(format_changed()))
+}
+
+fn query_global_local(
+    host: &dyn Host,
+    api: &Api,
+    base: &str,
+    authorization: &str,
+    headers: &[(&str, &str)],
+    refused: impl Fn(HttpFailure) -> Unread,
+) -> Result<Summary, Unread> {
+    let name = api.site.name;
+    match post_local(
+        host,
+        &format!("{base}/trae/api/v1/pay/ide_user_ent_usage"),
+        authorization,
+        headers,
+        &json!({"require_usage": true}),
+    ) {
+        Ok(body) => {
+            check_code(&body, name, true)?;
+            if let Some(s) = parse(&body) {
+                return Ok(s);
+            }
+        }
+        Err(HttpFailure::Status(404)) => {}
+        Err(other) => return Err(refused(other)),
+    }
+    let list = post_local(
+        host,
+        &format!("{base}{}", api.list),
+        authorization,
+        headers,
+        &json!({"require_usage": true, "full_data": true}),
+    )
+    .map_err(refused)?;
+    check_code(&list, name, true)?;
+    parse(&list).ok_or_else(|| Unread::from(format_changed()))
+}
+
+fn post_local(
+    host: &dyn Host,
+    url: &str,
+    authorization: &str,
+    headers: &[(&str, &str)],
+    body: &Value,
+) -> Result<Value, HttpFailure> {
+    host.http_json(&HttpRequest {
+        url,
+        secrets: &[("Authorization", authorization)],
+        headers,
+        body: Some(body),
+        timeout: Duration::from_secs(15),
+    })
+}
+
+fn local_base(api: &Api, auth: &LocalAuth) -> String {
+    if let Some(raw) = auth.host.as_deref() {
+        let host = raw
+            .trim()
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .trim_end_matches('/');
+        let allowed: &[&str] = if api.china {
+            &["api.trae.cn", "api.trae.com.cn"]
+        } else {
+            &[
+                "grow-normal.trae.ai",
+                "growsg-normal.trae.ai",
+                "grow-normal.traeapi.us",
+                "ug-normal.trae.ai",
+                "ug-normal.us.trae.ai",
+            ]
+        };
+        if allowed.contains(&host) {
+            return format!("https://{host}");
+        }
+    }
+    if api.china {
+        "https://api.trae.cn".into()
+    } else {
+        match auth
+            .region
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_uppercase()
+            .as_str()
+        {
+            "SG" | "US" => "https://growsg-normal.trae.ai".into(),
+            "USTTP" => "https://grow-normal.traeapi.us".into(),
+            _ => "https://grow-normal.trae.ai".into(),
+        }
+    }
+}
+
+pub(super) fn entitlements_web(
     host: &dyn Host,
     api: &Api,
     session: &WebSession,
@@ -38,15 +226,9 @@ fn entitlements_at(
         ("Origin", api.origin),
         ("Referer", referer.as_str()),
     ];
-    let signed_out = |site: &str| {
-        Unread::SignedOut(l10n::text(
-            &format!("{site} 在 Agent HUD 中的登录已失效，请在它的额度处重新登录"),
-            &format!("{site}'s sign-in in Agent HUD has ended; sign in again from its quota."),
-        ))
-    };
-    let name = api.site().name;
+    let name = api.site.name;
     let refused = |failure: HttpFailure| match failure {
-        HttpFailure::Status(401 | 403 | 300..=399) => signed_out(name),
+        HttpFailure::Status(401 | 403 | 300..=399) => web_signed_out(name),
         other => other.unread(),
     };
     let exchanged = host
@@ -76,110 +258,35 @@ fn entitlements_at(
             timeout: Duration::from_secs(15),
         })
         .map_err(refused)?;
-    if body["code"] == 1001 {
-        return Err(signed_out(name));
-    }
+    check_code(&body, name, false)?;
     parse(&body).ok_or_else(|| Unread::from(format_changed()))
 }
 
-fn format_changed() -> String {
-    l10n::text(
-        "TRAE 的额度格式无法识别",
-        "TRAE's usage has an unsupported format.",
-    )
-}
-
-pub(super) struct Summary {
-    used: f64,
-    total: f64,
-    /// `credits` for TRAE CN's credits; none for the international dollar
-    /// usage, whose amounts are shown as a share only.
-    unit: Option<&'static str>,
-    pub(super) plan: Option<String>,
-}
-
-impl Summary {
-    /// The quota of one site, none for an account with no allowance.
-    pub(super) fn quota(&self, api: &Api, site: &WebSite, id: &str) -> Option<Value> {
-        if self.total <= 0.0 {
-            return None;
-        }
-        let used = (self.used / self.total * 100.0).clamp(0.0, 100.0);
-        let (name, short) = match self.unit {
-            Some(_) => ("Credits", "Credits"),
-            None => ("Usage", "Usage"),
-        };
-        // Credit packs lapse on their own dates, so no one reset is told.
-        Some(json!({
-            "id": format!("{id}:{}", short.to_lowercase()), "vendor": api.agent, "accountId": id,
-            "account": site.name, "name": name, "shortLabel": short, "usedPercent": used,
-            "resetAt": null, "allModels": true, "status": status(used),
-            "nativeUsage": self.unit.map(|unit| json!({"used": self.used, "capacity": self.total, "unit": unit})),
-        }))
-    }
-}
-
-fn amount(value: &Value) -> Option<f64> {
-    value.as_f64().filter(|n| n.is_finite() && *n >= 0.0)
-}
-
-/// The entitlement list's answer: the credits summary TRAE CN reports
-/// (`usage_summary`), else, for dollar usage, its plan packs' basic usage and
-/// limits as the site's own page adds them up. Anything else is refused
-/// rather than read as no use.
-pub(super) fn parse(body: &Value) -> Option<Summary> {
-    let credits = body["is_credits_billing"] == true;
-    let dollars = body["is_dollar_usage_billing"] == true;
-    let packs = body["user_entitlement_pack_list"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    let plan = packs
-        .iter()
-        .find(|pack| pack["group_type"] == 0 && (pack["status"].is_null() || pack["status"] == 1))
-        .and_then(|pack| pack["display_desc"].as_str())
-        .map(str::trim)
-        .filter(|plan| !plan.is_empty())
-        .map(str::to_owned);
-    let summary = &body["usage_summary"];
-    if credits || (dollars && summary.is_object()) {
-        let used = amount(&summary["consumed_amount"])?;
-        let total = amount(&summary["total_amount"])?;
-        return Some(Summary {
-            used,
-            total,
-            unit: credits.then_some("credits"),
-            plan,
+fn check_code(body: &Value, name: &str, local: bool) -> Result<(), Unread> {
+    if body["code"] == 1001 || unwrap(body)["code"] == 1001 {
+        return Err(if local {
+            local_signed_out(name)
+        } else {
+            web_signed_out(name)
         });
     }
-    if !dollars {
-        return None;
-    }
-    let (mut used, mut total) = (0.0, 0.0);
-    for pack in packs.iter().filter(|pack| pack["is_hide"] != true) {
-        let info = &pack["entitlement_base_info"];
-        let quota = match &info["product_extra"]["subscription_extra"]["quota"] {
-            Value::Null => &info["quota"],
-            quota => quota,
-        };
-        let limit = &quota["basic_usage_limit"];
-        if limit.is_null() {
-            continue;
-        }
-        // -1 is no limit: no share of it can be told.
-        if limit.as_f64() == Some(-1.0) {
-            return None;
-        }
-        total += amount(limit)?;
-        used += match &pack["usage"]["basic_usage_amount"] {
-            Value::Null => 0.0,
-            value => amount(value)?,
-        };
-    }
-    Some(Summary {
-        used,
-        total,
-        unit: None,
-        plan,
-    })
+    Ok(())
+}
+
+fn local_signed_out(name: &str) -> Unread {
+    Unread::SignedOut(tr!(
+        "{{name}}'s saved sign-in has ended; sign in again in {{name}}.",
+        name = name
+    ))
+}
+
+fn web_signed_out(site: &str) -> Unread {
+    Unread::SignedOut(tr!(
+        "{{site}}'s sign-in in Agent HUD has ended; sign in again from its quota.",
+        site = site
+    ))
+}
+
+fn format_changed() -> String {
+    tr!("TRAE's usage has an unsupported format.")
 }

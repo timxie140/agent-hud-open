@@ -9,10 +9,13 @@
 //! the engine as it is, which keeps the last reading through a short outage.
 //! Any other server failure falls back to the cache, with the reason.
 use super::cache as bot;
-use crate::account::{legacy_unresolved, locate, status, Host, Provider, Reading, Unread};
-use crate::cursor::account::sign_in;
+use crate::account::{
+    add_readers, legacy_unresolved, locate, read_by, status, Host, Provider, QuotaReading, Reading,
+    Unread,
+};
+use crate::cursor::account::{sign_in, SignIn};
 use crate::naming::window_names;
-use crate::{iso, l10n, Location, PerOs, Support};
+use crate::{iso, l10n::tr, Location, PerOs, Support};
 use serde_json::{json, Value};
 
 /// Grok Bot's desktop cache, where it is known.
@@ -20,7 +23,7 @@ pub const CACHE_LOCATION: Location = Location::app_data(&["Grok Bot"], "sand-cli
 /// Grok Bot's desktop cache.
 pub const CACHE: PerOs<Location> = PerOs {
     macos: Support::Verified(CACHE_LOCATION),
-    windows: Support::Unsupported("Grok Bot's cache location on Windows is not known yet"),
+    windows: Support::Verified(CACHE_LOCATION),
     linux: Support::Unsupported("Grok Bot's cache location on Linux is not known yet"),
 };
 
@@ -35,22 +38,28 @@ pub static PROVIDER: Provider = Provider {
 pub fn read(host: &dyn Host) -> Result<Reading, Unread> {
     let mut r = Reading::empty("grok-bot");
     let Ok(directory) = locate(host, &CACHE) else {
-        r.notice = Some(l10n::text(
-            "此系统暂不支持读取 Grok Bot 缓存",
-            "Grok Bot cache acquisition is not implemented on this platform",
+        r.notice = Some(tr!(
+            "Grok Bot cache acquisition is not implemented on this platform"
         ));
         return Ok(r);
     };
     let Some(slot) = bot::account_through(host, &directory) else {
-        r.notice = Some(l10n::text(
-            "登录 Grok Bot 后读取其缓存的个人额度",
-            "Sign in to Grok Bot to expose its cached personal quota",
+        r.notice = Some(tr!(
+            "Sign in to Grok Bot to expose its cached personal quota"
         ));
         return Ok(r);
     };
     let now = chrono::Utc::now().timestamp_millis();
-    // Cursor's sign-in, read once: the Bot's account is read with it.
-    let cursor = sign_in(host).map_err(|why| why.reason().to_owned());
+    // Cursor's sign-in, read once: the Bot's account is read with it. It is
+    // another app's, so only while Cursor's own quota reading allows it.
+    let cursor_allowed = host
+        .quota_reading(crate::cursor::AGENT.id)
+        .allows(QuotaReading::Full);
+    let cursor = if cursor_allowed {
+        sign_in(host).map_err(|why| why.reason().to_owned())
+    } else {
+        Err(cursor_off())
+    };
     let same = match &cursor {
         Ok(Some(cursor)) if super::weekly::same_account(&slot, cursor) => Some(cursor),
         _ => None,
@@ -69,7 +78,11 @@ pub fn read(host: &dyn Host) -> Result<Reading, Unread> {
             }
             Err(_) => Err(why.reason().to_owned()),
         },
-    };
+    }
+    .map(|mut r| {
+        read_through(&mut r, same.is_some());
+        r
+    });
     let tokens = super::usage::read(host, &directory, &slot, &cursor, now);
     match (quota, tokens) {
         (Ok(mut r), Ok(records)) => {
@@ -88,8 +101,41 @@ pub fn read(host: &dyn Host) -> Result<Reading, Unread> {
             r.notice = Some(why);
             Ok(r)
         }
+        // Nothing left without Cursor's sign-in: say so, as an off reading does.
+        (Err(why), _) if !cursor_allowed => {
+            let mut r = Reading::empty("grok-bot");
+            r.notice = Some(joined(Some(cursor_off()), why));
+            Ok(r)
+        }
         (Err(why), _) => Err(why.into()),
     }
+}
+
+/// Why the Bot is read without Cursor's sign-in.
+fn cursor_off() -> String {
+    tr!("Cursor's quota reading is off in Settings, so Grok Bot is read without Cursor's sign-in.")
+}
+
+/// The Bot's account is read through the Bot, and through Cursor too when
+/// Cursor is signed in to it: xAI merged that Cursor account into SuperGrok,
+/// so one account serves both.
+fn read_through(r: &mut Reading, cursor: bool) {
+    read_by(r, "grok-bot");
+    if cursor {
+        let reader = json!({ "readBy": ["cursor"] });
+        for account in r.account.iter_mut() {
+            add_readers(account, &reader);
+        }
+    }
+}
+
+/// Whether Grok Bot is signed in to `cursor`'s account, the one Cursor is
+/// signed in to.
+pub(crate) fn bot_signed_in_to(host: &dyn Host, cursor: &SignIn) -> bool {
+    locate(host, &CACHE)
+        .ok()
+        .and_then(|directory| bot::account_through(host, &directory))
+        .is_some_and(|slot| super::weekly::same_account(&slot, cursor))
 }
 
 /// `notice` and then `why`, each said once.
@@ -114,12 +160,11 @@ fn cached(
     now: i64,
     email: Option<&str>,
 ) -> Result<Reading, String> {
-    let value = bot::value_through(host, directory, &bot::quota_key(slot), 2).ok_or_else(|| {
-        l10n::text(
-            "Grok Bot 缓存额度不可用，请在 Bot 中刷新",
-            "Grok Bot cached quota is unavailable; refresh in Bot",
-        )
-    })?;
+    // Grok Bot 1.1.0 writes schema v3 (it adds prepaid-balance fields); older
+    // Bot versions wrote v2. Accept either so a fresh cache is not discarded.
+    let value = bot::value_through(host, directory, &bot::quota_key(slot), 3)
+        .or_else(|| bot::value_through(host, directory, &bot::quota_key(slot), 2))
+        .ok_or_else(|| tr!("Grok Bot cached quota is unavailable; refresh in Bot"))?;
     if value["kind"] != "present" || !value["selectedTeamId"].is_null() {
         return Err(no_personal_quota());
     }
@@ -130,39 +175,34 @@ fn cached(
     let Some(observed) = observed.filter(|at| {
         *at <= now && now - at < 86_400_000 && expires.is_some_and(|e| e > now && e > *at)
     }) else {
-        return Err(l10n::text(
-            "Grok Bot 缓存的额度已超过一天，打开 Grok Bot 即可刷新",
-            "Grok Bot's cached quota is more than a day old; open Grok Bot to refresh it.",
+        return Err(tr!(
+            "Grok Bot's cached quota is more than a day old; open Grok Bot to refresh it."
         ));
     };
     let mut r = quota(&value["reading"]["usage"], slot, observed, email)?;
-    r.notice = Some(l10n::text(
-        "额度来自 Grok Bot 缓存；在 Bot 中刷新可更新读数",
-        "Quota from Grok Bot cache; refresh in Bot to update",
-    ));
+    r.notice = Some(tr!("Quota from Grok Bot cache; refresh in Bot to update"));
     if bot::account_through(host, directory).as_deref() != Some(slot) {
-        return Err(l10n::text(
-            "读取缓存期间 Grok Bot 账户发生了变化",
-            "Grok Bot account changed while reading its cache",
-        ));
+        return Err(tr!("Grok Bot account changed while reading its cache"));
     }
     Ok(r)
 }
 
 fn no_personal_quota() -> String {
-    l10n::text(
-        "Grok Bot 在当前账户或团队下没有个人周额度",
-        "Grok Bot has no personal weekly limit for this account or team.",
-    )
+    tr!("Grok Bot has no personal weekly limit for this account or team.")
 }
 
 /// The quota of Grok Bot's weekly `usage` (as its cache keeps it, or as
 /// `weekly` reads it from the servers) for `slot`, read at `observed`, on
 /// the account named `email` where Cursor's sign-in to it tells.
 fn quota(u: &Value, slot: &str, observed: i64, email: Option<&str>) -> Result<Reading, String> {
-    if u["hasNonZeroIncludedLimit"] != true
-        || !u["isSandTrial"].is_boolean()
+    // A trial reports its usage without including a weekly allowance; that
+    // reading is still the Bot's own quota, so show it rather than claim the
+    // account has no personal limit. Accounts that are neither trial nor
+    // carry an included limit (a pooled team allowance) keep the notice.
+    let trial = u["isSandTrial"] == true;
+    if !u["isSandTrial"].is_boolean()
         || u["isTeamSeat"] == true
+        || (u["hasNonZeroIncludedLimit"] != true && !trial)
     {
         return Err(no_personal_quota());
     }
@@ -175,13 +215,9 @@ fn quota(u: &Value, slot: &str, observed: i64, email: Option<&str>) -> Result<Re
         .map(|n| n.clamp(0., 100.));
     let reset = u["nextResetMs"].as_i64().and_then(iso);
     if !u["nextResetMs"].is_null() && reset.is_none() {
-        return Err(l10n::text(
-            "Grok Bot 缓存的重置时间无效",
-            "Grok Bot cache reset time is invalid",
-        ));
+        return Err(tr!("Grok Bot cache reset time is invalid"));
     }
     let observed = iso(observed);
-    let trial = u["isSandTrial"] == true;
     r.quotas.push(json!({"id":format!("{id}/grok"),"vendor":"grok-bot","consumerSource":"grok-bot","accountId":id,"legacyWindowId":format!("{id}/grok"),"name":if trial{"Trial usage limit"}else{"Weekly usage limit"},"shortLabel":if trial{"Trial".to_owned()}else{window_names::Period::Week.short_name()},"usedPercent":used,"resetAt":reset,"windowDurationSeconds":if trial{None}else{Some(604800)},"allModels":true,"observedAt":observed,"status":used.map(status).unwrap_or("unknown")}));
     let cap = u["onDemand"]["limitCents"].as_f64();
     let extra = u["onDemand"]["usedCents"].as_f64();
@@ -227,6 +263,14 @@ mod tests {
             .file(&quota_file, &quota)
     }
 
+    fn host_with_schema(quota: Value, schema: u64) -> FakeHost {
+        let (account_file, account) = entry(bot::ACCOUNT_KEY, 1, json!("slot-1"));
+        let (quota_file, quota) = entry(&bot::quota_key("slot-1"), schema, quota);
+        FakeHost::new("/u")
+            .file(&account_file, &account)
+            .file(&quota_file, &quota)
+    }
+
     fn fresh_quota(trial: bool) -> Value {
         let now = chrono::Utc::now().timestamp_millis();
         json!({
@@ -266,6 +310,28 @@ mod tests {
     }
 
     #[test]
+    fn the_bots_account_is_read_through_cursor_too_when_cursor_is_signed_in_to_it() {
+        // No Cursor here: the Bot's account is the Bot's alone.
+        let mut reading = read(&host_with(fresh_quota(false))).unwrap();
+        assert_eq!(
+            reading.account.as_ref().unwrap()["readBy"],
+            json!(["grok-bot"])
+        );
+        read_through(&mut reading, true);
+        assert_eq!(
+            reading.account.unwrap()["readBy"],
+            json!(["grok-bot", "cursor"])
+        );
+    }
+
+    #[test]
+    fn quota_from_schema_v3_cache_is_read() {
+        let reading = read(&host_with_schema(fresh_quota(false), 3)).unwrap();
+        assert_eq!(reading.quotas[0]["usedPercent"], 42.0);
+        assert_eq!(reading.quotas[0]["windowDurationSeconds"], 604800);
+    }
+
+    #[test]
     fn a_trial_has_no_weekly_window() {
         let reading = read(&host_with(fresh_quota(true))).unwrap();
         assert_eq!(reading.quotas[0]["name"], "Trial usage limit");
@@ -273,9 +339,19 @@ mod tests {
     }
 
     #[test]
+    fn a_trial_without_an_included_limit_still_reports_its_usage() {
+        let mut quota = fresh_quota(true);
+        quota["reading"]["usage"]["hasNonZeroIncludedLimit"] = json!(false);
+        let reading = read(&host_with(quota)).unwrap();
+        assert_eq!(reading.quotas[0]["name"], "Trial usage limit");
+        assert_eq!(reading.quotas[0]["usedPercent"], 42.0);
+        assert_eq!(reading.account.unwrap()["plan"], "SuperGrok");
+    }
+
+    #[test]
     fn other_systems_say_the_cache_is_not_supported_yet() {
         let mut host = host_with(fresh_quota(false));
-        host.os = Os::Windows;
+        host.os = Os::Linux;
         let reading = read(&host).unwrap();
         assert_eq!(
             reading.notice.as_deref(),
@@ -305,5 +381,81 @@ mod tests {
             reading.quotas.is_empty(),
             "a linked account file is not read"
         );
+    }
+
+    /// The Bot signed in to the account Cursor is signed in to, with a
+    /// fresh cache, and Cursor's sign-in in its database.
+    fn with_cursor(dir: &tempfile::TempDir, quota: Value) -> FakeHost {
+        let slot = "auth0|user_123";
+        let (account_file, account) = entry(bot::ACCOUNT_KEY, 1, json!(slot));
+        let (quota_file, quota) = entry(&bot::quota_key(slot), 2, quota);
+        let claims = json!({"exp": chrono::Utc::now().timestamp() + 3600, "sub": slot});
+        let token = format!(
+            "h.{}.s",
+            base64::Engine::encode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                serde_json::to_vec(&claims).unwrap(),
+            )
+        );
+        let path = dir.path().join("state.vscdb");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS ItemTable (key TEXT PRIMARY KEY, value BLOB);",
+        )
+        .unwrap();
+        db.execute(
+            "INSERT OR REPLACE INTO ItemTable VALUES ('cursorAuth/accessToken', ?1)",
+            [&token],
+        )
+        .unwrap();
+        let mut host = FakeHost::new("/u")
+            .file(&account_file, &account)
+            .file(&quota_file, &quota);
+        host.databases.insert(CURSOR_DB.into(), path);
+        host
+    }
+
+    const CURSOR_DB: &str = "/u/AppData/Cursor/User/globalStorage/state.vscdb";
+
+    fn cursors(host: &FakeHost) -> bool {
+        let opened = host.read.borrow().iter().any(|path| {
+            path == std::path::Path::new(CURSOR_DB) || path == std::path::Path::new("Cursor")
+        });
+        opened
+            || host
+                .asked
+                .borrow()
+                .iter()
+                .any(|(url, _)| url.contains("cursor.sh"))
+    }
+
+    #[test]
+    fn cursor_off_opens_and_sends_nothing_of_cursors() {
+        let dir = tempfile::tempdir().unwrap();
+        // In full, Cursor's sign-in is read and sent.
+        let host = with_cursor(&dir, fresh_quota(false));
+        let _ = read(&host);
+        assert!(cursors(&host), "Cursor's sign-in is used in full");
+        let mut host = with_cursor(&dir, fresh_quota(false));
+        host.quota_levels.insert("cursor".into(), QuotaReading::Off);
+        let reading = read(&host).unwrap();
+        assert!(!cursors(&host), "nothing of Cursor's is opened or sent");
+        // The Bot's own cache still shows, and says why there are no tokens.
+        assert_eq!(reading.quotas[0]["usedPercent"], 42.0);
+        assert_eq!(reading.account.unwrap()["readBy"], json!(["grok-bot"]));
+        assert!(reading.notice.unwrap().contains(&cursor_off()));
+    }
+
+    #[test]
+    fn cursor_off_with_nothing_left_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut quota = fresh_quota(false);
+        quota["expiresAtMs"] = json!(1);
+        let mut host = with_cursor(&dir, quota);
+        host.quota_levels.insert("cursor".into(), QuotaReading::Off);
+        let reading = read(&host).unwrap();
+        assert!(reading.quotas.is_empty() && reading.account.is_none());
+        assert!(reading.notice.unwrap().starts_with(&cursor_off()));
+        assert!(!cursors(&host));
     }
 }

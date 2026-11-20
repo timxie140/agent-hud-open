@@ -3,17 +3,21 @@
 //! `configuredVendors` do, for what the host draws itself: the menu bar item,
 //! the HUD windows' sizes and the Bots' directions.
 mod format;
+mod panel_rows;
 
 use crate::presentation::{mark, resting_agents};
 pub use format::{
     meter_label, money_amount, money_short, quota_percent, recent_label, tokens_short,
 };
+use panel_rows::{deepseek_balances, row_shown};
 use serde_json::Value;
+use std::cmp::Ordering;
 
 pub struct Vendor<'a> {
     pub key: String,
     pub name: String,
-    /// The tightest measured window's used percent.
+    /// The measured window's used percent: the shortest, when the screen asks
+    /// for it, else the tightest. `level` is the tightest's either way.
     pub used: Option<f64>,
     /// The last reading's tightest window while every window waits on a
     /// failed read (`held`).
@@ -33,49 +37,20 @@ fn list<'a>(snapshot: &'a Value, key: &str) -> impl Iterator<Item = &'a Value> {
     snapshot[key].as_array().into_iter().flatten()
 }
 
-/// DeepSeek can return several currencies for the same account. The row ID,
-/// rather than account ID, identifies the individual display preference.
-fn deepseek_balances<'a>(snapshot: &'a Value, layout: &Value) -> (Option<String>, &'a str) {
-    let mut rows: Vec<&Value> = list(snapshot, "billing")
-        .filter(|row| mark(row["vendor"].as_str().unwrap_or("")) == "deepseek")
-        .filter(|row| {
-            let id = row["id"].as_str().unwrap_or("");
-            let account = row["accountId"].as_str().unwrap_or(id);
-            let has = |key: &str, value: &str| {
-                layout[key]
-                    .as_array()
-                    .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(value)))
-            };
-            !has("hiddenRows", id)
-                && !has("hiddenAccounts", account)
-                && (layout["accounts"]
-                    .as_array()
-                    .is_none_or(|items| items.is_empty())
-                    || has("accounts", account))
-        })
-        .collect();
-    let order = layout["rows"].as_array();
-    rows.sort_by_key(|row| {
-        order
-            .and_then(|items| items.iter().position(|item| item == &row["id"]))
-            .unwrap_or(usize::MAX)
-    });
-    let level = if rows.iter().any(|row| row["level"] == "critical") {
-        "critical"
-    } else if rows.iter().any(|row| row["level"] == "warning") {
-        "warning"
-    } else if rows.iter().any(|row| row["level"] == "normal") {
-        "normal"
-    } else {
-        "stale"
-    };
-    let balance = (!rows.is_empty()).then(|| {
-        rows.iter()
-            .map(|row| money_amount(&row["amount"], row["currency"].as_str().unwrap_or("USD")))
-            .collect::<Vec<_>>()
-            .join(" · ")
-    });
-    (balance, level)
+/// Whether a window's reset has passed: its share has started over, so its
+/// reading no longer says how much is used until the next read (Open #90;
+/// held-reading.ts `resetPassed`).
+fn reset_passed(q: &Value, now_ms: i64) -> bool {
+    q["resetAt"]
+        .as_str()
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .is_some_and(|at| at.timestamp_millis() <= now_ms)
+}
+
+/// A window that reads live now: a number from the last read, and a reset
+/// still ahead (held-reading.ts `liveWindow`).
+fn live(q: &Value, now_ms: i64) -> bool {
+    q["usedPercent"].is_number() && q["status"] != "stale" && !reset_passed(q, now_ms)
 }
 
 /// The tightest window of an agent's last reading while every window waits
@@ -83,24 +58,60 @@ fn deepseek_balances<'a>(snapshot: &'a Value, layout: &Value) -> (Option<String>
 /// grey. A window whose reset has passed holds nothing, since its share has
 /// started over. None while any window reads live (held-reading.ts `heldUsed`).
 fn held(quotas: &[&Value], now_ms: i64) -> Option<f64> {
-    if quotas
-        .iter()
-        .any(|q| q["usedPercent"].is_number() && q["status"] != "stale")
-    {
+    if quotas.iter().any(|q| live(q, now_ms)) {
         return None;
     }
     quotas
         .iter()
-        .filter(|q| {
-            q["resetAt"]
-                .as_str()
-                .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
-                .is_none_or(|at| at.timestamp_millis() > now_ms)
-        })
+        .filter(|q| !reset_passed(q, now_ms))
         .filter_map(|q| q["usedPercent"].as_f64())
         .fold(None, |most: Option<f64>, used| {
             Some(most.map_or(used, |most| most.max(used)))
         })
+}
+
+/// The live window with the highest used percent, with that percent; the
+/// first of equal readings stays the tightest (model.ts `tightestWindow`).
+fn tightest<'a>(quotas: &[&'a Value], now_ms: i64) -> Option<(f64, &'a Value)> {
+    quotas
+        .iter()
+        .filter(|q| live(q, now_ms))
+        .filter_map(|q| Some((q["usedPercent"].as_f64()?, *q)))
+        .fold(None, |best, (used, q)| match best {
+            Some((most, _)) if used <= most => best,
+            _ => Some((used, q)),
+        })
+}
+
+/// The live window with the shortest reported window, with its percent; ties
+/// go to the highest used percent. When no live window reports a window
+/// length, the tightest window instead, so a screen without duration data
+/// reads as it did (held-reading.ts `shortestWindow`).
+fn shortest<'a>(quotas: &[&'a Value], now_ms: i64) -> Option<(f64, &'a Value)> {
+    quotas
+        .iter()
+        .filter(|q| live(q, now_ms))
+        .filter(|q| {
+            q["windowDurationSeconds"]
+                .as_f64()
+                .is_some_and(|duration| duration.is_finite() && duration > 0.0)
+        })
+        .min_by(|a, b| {
+            let duration = |q: &&Value| q["windowDurationSeconds"].as_f64().unwrap();
+            duration(a)
+                .partial_cmp(&duration(b))
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| {
+                    // Ties: the highest used percent sorts first.
+                    b["usedPercent"]
+                        .as_f64()
+                        .unwrap()
+                        .partial_cmp(&a["usedPercent"].as_f64().unwrap())
+                        .unwrap_or(Ordering::Equal)
+                })
+        })
+        .map(|q| (q["usedPercent"].as_f64().unwrap(), *q))
+        .or_else(|| tightest(quotas, now_ms))
 }
 
 /// Every agent a resting HUD in `mode` shows without a list, one per mark; `mode` is
@@ -113,15 +124,7 @@ pub fn vendors<'a>(snapshot: &'a Value, mode: &str, now_ms: i64) -> Vec<Vendor<'
             let quotas: Vec<&Value> = list(snapshot, "quotas")
                 .filter(|q| mark(q["vendor"].as_str().unwrap_or("")) == key)
                 .collect();
-            // The first of equal readings stays the tightest.
-            let tightest = quotas
-                .iter()
-                .filter(|q| q["status"] != "stale")
-                .filter_map(|q| Some((q["usedPercent"].as_f64()?, *q)))
-                .fold(None::<(f64, &Value)>, |best, (used, q)| match best {
-                    Some((most, _)) if used <= most => best,
-                    _ => Some((used, q)),
-                });
+            let tightest = tightest(&quotas, now_ms);
             let sessions: Vec<&Value> = list(snapshot, "sessions")
                 .filter(|s| mark(s["source"].as_str().unwrap_or("")) == key)
                 .collect();
@@ -171,15 +174,42 @@ pub fn vendors<'a>(snapshot: &'a Value, mode: &str, now_ms: i64) -> Vec<Vendor<'
 /// The marks a screen's HUD shows, in Settings' agent order, the layout's `order`
 /// (resting-agents.ts `layoutMarks`). Its `hud.agents` picks which marks show but
 /// not their order; a list naming none of the available agents never empties a
-/// HUD (HUDAgentOrder.swift).
+/// HUD (HUDAgentOrder.swift). `shortest_first` is the screen's own switch
+/// (Settings → Display → HUD): its numbers follow the shortest live window,
+/// not the most used one.
 pub fn configured<'a>(
     snapshot: &'a Value,
     mode: &str,
     layout: &Value,
     now_ms: i64,
+    shortest_first: bool,
 ) -> Vec<Vendor<'a>> {
     let mut available = vendors(snapshot, mode, now_ms);
     for vendor in &mut available {
+        // The number and level follow the windows the panel shows: a row the
+        // person hid there no longer sets them (Open #91). The rings already
+        // draw only those (mark-windows.ts).
+        let shown: Vec<&Value> = vendor
+            .quotas
+            .iter()
+            .copied()
+            .filter(|q| row_shown(q, &layout["blocks"][q["vendor"].as_str().unwrap_or("")]))
+            .collect();
+        if shown.len() < vendor.quotas.len() || shortest_first {
+            let tightest = tightest(&shown, now_ms);
+            // The switch moves only the number: the level, and with it every
+            // colour, stays the tightest window's (held-reading.ts `windowReading`).
+            let number = if shortest_first {
+                shortest(&shown, now_ms)
+            } else {
+                tightest
+            };
+            vendor.used = number.map(|(used, _)| used);
+            vendor.held = held(&shown, now_ms);
+            vendor.level = tightest
+                .and_then(|(_, q)| q["status"].as_str())
+                .unwrap_or("stale");
+        }
         if vendor.key == "deepseek" && vendor.quotas.is_empty() && vendor.balance.is_some() {
             let block = list(snapshot, "billing")
                 .find(|b| mark(b["vendor"].as_str().unwrap_or("")) == vendor.key)
@@ -240,17 +270,22 @@ fn vendor_name(source: &str) -> String {
         "hermes" => "Hermes",
         "zcode" => "ZCode",
         "codebuddy" => "CodeBuddy",
+        "codebuddy-cn" => "CodeBuddy CN",
         "workbuddy" => "WorkBuddy",
         "qwen" => "Qwen",
         "qoder" => "Qoder",
+        "qoder-cn" => "Qoder CN",
+        "qoder-work" => "QoderWork",
         "devin" => "Devin",
         "minimax" => "MiniMax",
+        "minimax-code" => "MiniMax Code",
         "ark" => "Volcengine Ark",
         "droid" => "Factory Droid",
         "cline" => "Cline",
         "roo-code" => "Roo Code",
         "goose" => "Goose",
         "trae" => "TRAE",
+        "trae-cn" => "TRAE CN",
         // Agents with no mark of their own here, by their own names.
         _ => agent_hud_core::naming::model_names::vendor_name(source),
     };

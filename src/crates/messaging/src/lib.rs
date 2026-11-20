@@ -1,7 +1,7 @@
 //! Agent messages: an agent session asks Agent HUD, through its MCP server, to
 //! send words into another Claude Code, Codex, Antigravity or DeepSeek Harness
-//! session on this computer, or to start one, and later reads that session's
-//! answer. A tool group of its own, off until the user turns it on
+//! session on this computer, or to start one, in a model the user names or
+//! else the client's own, and later reads that session's answer. A tool group of its own, off until the user turns it on
 //! (`Preferences`). Delivery goes through `agent_hud_platform::delivery`, the
 //! same way as a message typed into a session from the HUD. A call runs at
 //! once on the caller's thread, so nothing is sent after its caller stopped
@@ -10,6 +10,7 @@
 //! The words are kept only while they are delivered: the journal keeps who sent
 //! what to whom, a fingerprint of the words and where the answer will be, and
 //! an answer is read again from the other session's transcript each time.
+mod answers;
 mod dot_confirm;
 mod dot_incoming;
 mod dot_port;
@@ -18,6 +19,7 @@ mod flights;
 mod get;
 mod journal;
 mod listing;
+mod models;
 mod outcome;
 mod preferences;
 mod send;
@@ -27,17 +29,20 @@ mod start;
 mod tests;
 mod tools;
 mod transcript;
+mod user;
 mod words;
 
 pub use preferences::{Preferences, DEFAULT_LIMIT};
 pub use transcript::{StoredTurn, Turns};
+pub use user::{UserTarget, USER_CLIENTS};
 
+use agent_hud_core::l10n::Language;
 use agent_hud_platform::delivery::{
     self, DeliveryState, LocalClients, Operation, PromptForm, Provider, SendRequest, SessionStarts,
     SessionTarget, StartReceipt, StartRequest, CLAUDE_MESSAGES_OFF, DEEPSEEK_MESSAGES_OFF,
 };
-use flights::flight;
-pub use flights::Flight;
+use flights::{flight, person_flight};
+pub use flights::{Flight, PERSON};
 use journal::{Journal, Kind, Message, Party};
 use outcome::*;
 use serde::Deserialize;
@@ -117,6 +122,8 @@ pub struct Messaging {
     starts: SessionStarts,
     follow: Follow,
     fly: Fly,
+    /// Answers thrown back, for `get_message` once a client's next turn hides them.
+    answers: answers::Answers,
 }
 
 impl Messaging {
@@ -138,6 +145,7 @@ impl Messaging {
             starts,
             follow,
             fly,
+            answers: Default::default(),
         }
     }
 
@@ -152,8 +160,8 @@ impl Messaging {
         let caller = serde_json::from_value::<Caller>(params["caller"].clone())
             .ok()
             .map(|mut caller| {
-                if let Some(session_id) =
-                    find(host.snapshot, &caller.session_id).and_then(|s| s["id"].as_str())
+                if let Some(session_id) = find_in(host.snapshot, &caller.client, &caller.session_id)
+                    .and_then(|s| s["id"].as_str())
                 {
                     caller.session_id = session_id.to_owned();
                 }
@@ -162,6 +170,7 @@ impl Messaging {
         let arguments = &params["arguments"];
         match params["name"].as_str().unwrap_or("") {
             "list_sessions" => Ok(self.list(caller.as_ref(), host)),
+            "list_models" => self.models(arguments),
             "send_message" => {
                 let Some(caller) = caller else {
                     return Ok(refused(&words::no_caller(language(host.snapshot))));
@@ -213,7 +222,7 @@ impl Messaging {
         changed |= self.fly_answers(host, now);
         for message in self.journal.messages_mut() {
             if message.kind != Kind::Send
-                || !matches!(message.to.client.as_str(), "claude" | "deepseek")
+                || !Provider::parse(&message.to.client).is_some_and(Provider::queues_in_channel)
                 || !matches!(message.state.as_str(), "queued" | "taken")
             {
                 continue;

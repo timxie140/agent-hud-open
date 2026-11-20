@@ -97,8 +97,7 @@ impl crate::AgentHudCore {
             self.settings = previous;
             return Err(error);
         }
-        self.requests
-            .set_hold_ms(self.settings["approvalWaitMinutes"].as_u64().unwrap_or(10) * 60_000);
+        self.requests.apply_settings(&self.settings);
         Ok(true)
     }
 
@@ -110,8 +109,11 @@ impl crate::AgentHudCore {
             self.settings = previous;
             return Err(error);
         }
-        if key == "approvalWaitMinutes" {
-            self.requests.set_hold_ms(value.as_u64().unwrap() * 60_000);
+        if matches!(
+            key,
+            "approvalWaitMinutes" | "autoApprove" | "autoApproveOff" | "answerInHud" | "answerOff"
+        ) {
+            self.requests.apply_settings(&self.settings);
         }
         self.apply_user_prices();
         Ok(())
@@ -132,6 +134,7 @@ impl crate::AgentHudCore {
 
     fn validate_setting(key: &str, value: &Value) -> Result<(), String> {
         match key {
+            "guide" if crate::guide::valid(value) => {}
             "appearance" if ["dark", "light", "system"].contains(&value.as_str().unwrap_or("")) => {
             }
             "quotaDisplay" if matches!(value.as_str(), Some("consumed" | "remaining")) => {}
@@ -154,6 +157,9 @@ impl crate::AgentHudCore {
             | "claudeMessages"
             | "deepseekMessages"
             | "readCopilotQuota"
+            | "liveStatus"
+            | "answerInHud"
+            | "autoApprove"
             | "clientHooks"
             | "launchAtLogin"
             | "hudVisible"
@@ -166,6 +172,17 @@ impl crate::AgentHudCore {
                 if value
                     .as_u64()
                     .is_some_and(|v| [1, 3, 5, 10, 30, 60].contains(&v)) => {}
+            // Clients whose requests stay with them while answering in the HUD
+            // is on, and those not approved automatically while that is on,
+            // each once.
+            "answerOff" | "autoApproveOff"
+                if value.as_array().is_some_and(|ids| {
+                    ids.iter().enumerate().all(|(index, id)| {
+                        id.as_str()
+                            .is_some_and(|id| agent_hud_agents::split::agent_of(id).is_some())
+                            && !ids[..index].contains(id)
+                    })
+                }) => {}
             // Clients whose approval hook waits for the user to turn it on
             // (agents `Permission::opt_in`), each once.
             "optInApprovals"
@@ -210,6 +227,9 @@ impl crate::AgentHudCore {
                                 && matches!(kind.as_str(), Some("model" | "gateway"))
                         })
                 }) => {}
+            // How far each agent's quota may be read, by agent id (agents
+            // `quota_reading::SETTING`).
+            "quotaReading" if agent_hud_agents::account::quota_reading::valid(value) => {}
             // The relay addresses whose balance may be read with the key the
             // client already sends them (agents `relays::CONSENT`).
             "relayReading"
@@ -242,13 +262,7 @@ impl crate::AgentHudCore {
                 }
             }
         }
-        self.requests.set_hold_ms(
-            self.settings["approvalWaitMinutes"]
-                .as_u64()
-                .filter(|v| [1, 3, 5, 10, 30, 60].contains(v))
-                .unwrap_or(10)
-                * 60_000,
-        );
+        self.requests.apply_settings(&self.settings);
         self.apply_user_prices();
         let enabled = serde_json::from_value(stored["providers"].clone())
             .map_err(|e| format!("Provider preferences could not be read: {e}"))?;
@@ -302,6 +316,54 @@ mod tests {
         core.apply_setting("quotaDisplay", &json!("consumed"))
             .unwrap();
         assert_eq!(core.settings["quotaDisplay"], "consumed");
+    }
+
+    #[test]
+    fn quota_reading_levels_persist_and_reject_unknown_levels() {
+        let home = tempfile::tempdir().unwrap();
+        let mut core = AgentHudCore::new(vec![], home.path().to_owned());
+        assert_eq!(core.settings["quotaReading"], json!({}));
+        let levels = json!({"claude": "official", "cursor": "off"});
+        core.apply_setting("quotaReading", &levels).unwrap();
+        let reopened = AgentHudCore::new(vec![], home.path().to_owned());
+        assert_eq!(reopened.settings["quotaReading"], levels);
+        for invalid in [
+            json!({"claude": "sometimes"}),
+            json!(["claude"]),
+            json!(null),
+        ] {
+            assert!(core.apply_setting("quotaReading", &invalid).is_err());
+            assert_eq!(core.settings["quotaReading"], levels);
+        }
+    }
+
+    #[test]
+    fn each_agent_is_offered_the_quota_reading_levels_that_read_differently_for_it() {
+        let home = tempfile::tempdir().unwrap();
+        let mut core = AgentHudCore::new(vec![], home.path().to_owned());
+        let levels = json!({"claude": "official", "cursor": "local"});
+        core.apply_setting("quotaReading", &levels).unwrap();
+        let snapshot = core.request("snapshot", json!({})).unwrap();
+        let offered = |id: &str| {
+            snapshot["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["id"] == id)
+                .unwrap()["quotaReading"]
+                .clone()
+        };
+        assert_eq!(
+            offered("claude"),
+            json!({"choices": ["off", "official", "full"], "level": "official"})
+        );
+        // Not offered its own app alone: a saved one counts as the next down.
+        assert_eq!(
+            offered("cursor"),
+            json!({"choices": ["off", "full"], "level": "off"})
+        );
+        assert_eq!(offered("codex")["level"], "full");
+        assert!(offered("copilot").is_null() && offered("qwen").is_null());
     }
 
     #[test]
@@ -386,5 +448,35 @@ mod tests {
         let core = AgentHudCore::new(vec![], home.path().to_owned());
         assert_eq!(core.settings["language"], "en");
         assert_eq!(core.settings["quotaDisplay"], "consumed");
+    }
+
+    #[test]
+    fn a_new_copy_starts_the_guide_and_an_older_one_is_known_to_be_in_use() {
+        let home = tempfile::tempdir().unwrap();
+        let mut core = AgentHudCore::new(vec![], home.path().to_owned());
+        assert!(core.settings["guide"]["since"].as_u64().unwrap() > 0);
+        assert_eq!(core.settings["guide"]["seen"], "");
+        let finished = json!({"since": 5, "seen": "0.6.2", "step": "", "star": "done"});
+        core.apply_setting("guide", &finished).unwrap();
+        let reopened = AgentHudCore::new(vec![], home.path().to_owned());
+        assert_eq!(reopened.settings["guide"], finished);
+        for invalid in [
+            json!({"since": 5, "seen": "0.6.2", "step": ""}),
+            json!({"since": -1, "seen": "", "step": "", "star": ""}),
+            json!({"since": 5, "seen": 2, "step": "", "star": ""}),
+            json!(null),
+        ] {
+            assert!(core.apply_setting("guide", &invalid).is_err());
+        }
+
+        let older = tempfile::tempdir().unwrap();
+        fs::write(
+            older.path().join("settings.json"),
+            r#"{"settings":{"language":"en"},"providers":{}}"#,
+        )
+        .unwrap();
+        let core = AgentHudCore::new(vec![], older.path().to_owned());
+        assert_eq!(core.settings["guide"]["since"], 0);
+        assert_eq!(core.settings["guide"]["seen"], "");
     }
 }

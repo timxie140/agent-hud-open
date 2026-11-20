@@ -5,7 +5,7 @@ mod files;
 mod pids;
 pub(crate) use files::{
     hook_configuration, hook_text, owned_by_user, owner_only, private_append, private_directory,
-    private_file, read_stdin,
+    private_file, read_stdin, user_transcript,
 };
 pub(crate) use pids::pid_runs;
 use std::{
@@ -24,6 +24,15 @@ pub(crate) fn environment_value<'a>(env: &'a Environment, key: &str) -> Option<&
 }
 pub(crate) fn is_shell(path: &Path) -> bool {
     matches!(path.to_str(), Some("/bin/sh" | "/bin/bash" | "/bin/zsh"))
+}
+/// How an engine starts: its own program with the arguments as given.
+pub(crate) fn engine_command<S: AsRef<OsStr>>(
+    executable: &Path,
+    arguments: &[S],
+) -> Result<Command, String> {
+    let mut command = Command::new(executable);
+    command.args(arguments);
+    Ok(command)
 }
 pub(super) fn executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;

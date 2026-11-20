@@ -219,6 +219,7 @@ fn without_project(request_id: &str) -> StartRequest {
         text: "Plan a trip".into(),
         folder: String::new(),
         title: None,
+        model: None,
     }
 }
 
@@ -386,4 +387,400 @@ fn launch_trusts_the_task_folder_only_where_claude_code_is_set_up() {
     fs::remove_file(fixture.home().join(".claude.json")).unwrap();
     fixture.starts().trust_task_folder().unwrap();
     assert!(!fixture.home().join(".claude.json").exists());
+}
+
+const HARNESS_SESSION: &str = "session-11111111-2222-4333-8444-555555555555";
+
+fn harness_request(fixture: &StartFixture) -> StartRequest {
+    StartRequest {
+        provider: Provider::DeepSeek,
+        ..fixture.request()
+    }
+}
+/// The fixture's session list with a DeepSeek Harness session in the project.
+fn harness_sessions(fixture: &StartFixture) -> Vec<Value> {
+    let mut sessions = fixture.sessions();
+    sessions.push(json!({"id":format!("deepseek:{HARNESS_SESSION}"),"source":"deepseek","cwd":fixture.home().join("project"),"updatedAt":"2026-10-21T10:00:00Z","parentId":null}));
+    sessions
+}
+/// A Harness host running Agent HUD's plugin: after `delay` it checks in under
+/// process 777, then writes `answer` over the first start asked of it and
+/// returns what was asked.
+fn harness_host(channel: &Path, delay: Duration, answer: Value) -> std::thread::JoinHandle<Value> {
+    let channel = channel.to_path_buf();
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        crate::os::private_directory(&channel.join("hosts")).unwrap();
+        fs::write(
+            channel.join("hosts/777.json"),
+            br#"{"at":1,"desktop":true}"#,
+        )
+        .unwrap();
+        for _ in 0..500 {
+            // As the plugin does: only `.json` requests (Agent HUD writes
+            // each through a `.tmp` beside it first), answered by a rename.
+            let asked = fs::read_dir(channel.join("starts/777"))
+                .ok()
+                .and_then(|files| {
+                    files
+                        .flatten()
+                        .find(|entry| entry.path().extension().is_some_and(|e| e == "json"))
+                })
+                .and_then(|entry| {
+                    let value =
+                        serde_json::from_slice::<Value>(&fs::read(entry.path()).ok()?).ok()?;
+                    let temp = entry.path().with_extension("answer");
+                    fs::write(&temp, answer.to_string()).ok()?;
+                    fs::rename(&temp, entry.path()).ok()?;
+                    Some(value)
+                });
+            if let Some(asked) = asked {
+                return asked;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("no start was asked of the Harness host");
+    })
+}
+
+#[test]
+fn harness_is_offered_with_its_plugin_and_a_host_or_the_desktop_app() {
+    let fixture = StartFixture::new();
+    let channel = fixture.root.join("deepseek-channel");
+    let offered = |starts: &mut SessionStarts| {
+        starts
+            .update_offers(&harness_sessions(&fixture))
+            .into_iter()
+            .find(|offer| offer.provider == Provider::DeepSeek)
+    };
+    // No channel: the product's own starts, which the phone reads.
+    assert!(offered(&mut fixture.starts()).is_none());
+    let mut starts = fixture
+        .starts()
+        .with_deepseek_channel(Some(DeepSeekChannel::new(channel.clone())));
+    // The plugin is not installed: its folders are missing.
+    fixture.install("DeepSeek Harness.app", false, true);
+    assert!(offered(&mut starts).is_none());
+    crate::os::private_directory(&channel.join("hosts")).unwrap();
+    let offer = offered(&mut starts).unwrap();
+    assert_eq!(offer.app, "desktop");
+    assert_eq!(offer.folders, ["~/project"]);
+    // Neither a running host nor the app to open.
+    fixture.install("DeepSeek Harness.app", false, false);
+    assert!(offered(&mut starts).is_none());
+    fs::write(
+        channel.join("hosts/777.json"),
+        br#"{"at":1,"desktop":false}"#,
+    )
+    .unwrap();
+    assert_eq!(offered(&mut starts).unwrap().app, "cli");
+}
+
+#[test]
+fn a_harness_start_opens_the_desktop_app_when_no_host_runs() {
+    let fixture = StartFixture::new();
+    let channel = fixture.root.join("deepseek-channel");
+    crate::os::private_directory(&channel.join("hosts")).unwrap();
+    fixture.install("DeepSeek Harness.app", false, true);
+    let mut starts = fixture
+        .starts()
+        .with_deepseek_channel(Some(DeepSeekChannel::new(channel.clone())));
+    starts.update_offers(&harness_sessions(&fixture));
+    let host = harness_host(
+        &channel,
+        Duration::from_millis(100),
+        json!({"takenAt":1,"sessionId":HARNESS_SESSION,"startedAt":2}),
+    );
+    let receipt = starts.start(harness_request(&fixture)).unwrap();
+    assert_eq!(receipt.state, "started", "{:?}", receipt.reason);
+    assert_eq!(
+        receipt.session_id,
+        Some(format!("deepseek:{HARNESS_SESSION}"))
+    );
+    assert_eq!(fixture.fake.opened(), ["dsh://open"]);
+    let asked = host.join().unwrap();
+    assert_eq!(asked["cwd"], json!(fixture.home().join("project")));
+    assert_eq!(asked["text"], "Look at the failing test");
+    assert_eq!(asked["id"], REQUEST);
+    // The same request again returns the saved receipt and asks nothing new.
+    let again = starts.start(harness_request(&fixture)).unwrap();
+    assert_eq!(again.session_id, receipt.session_id);
+    assert_eq!(fixture.fake.opened().len(), 1);
+}
+
+#[test]
+fn a_harness_start_reports_what_harness_refused() {
+    let fixture = StartFixture::new();
+    let channel = fixture.root.join("deepseek-channel");
+    let mut starts = fixture
+        .starts()
+        .with_deepseek_channel(Some(DeepSeekChannel::new(channel.clone())));
+    let host = harness_host(
+        &channel,
+        Duration::ZERO,
+        json!({"takenAt":1,"refused":"no such folder"}),
+    );
+    while !channel.join("hosts/777.json").exists() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    starts.update_offers(&harness_sessions(&fixture));
+    let receipt = starts.start(harness_request(&fixture)).unwrap();
+    host.join().unwrap();
+    assert_eq!(receipt.state, "rejected");
+    assert!(receipt.reason.unwrap().contains("no such folder"));
+    assert!(receipt.session_id.is_none());
+    // A running host is used as it is: the app is not opened.
+    assert!(fixture.fake.opened().is_empty());
+}
+
+use super::super::process::ProcessOutput;
+
+/// Starts that find Pi and OpenCode at fake paths, with Pi's agent folder
+/// and OpenCode's data folder inside the fixture.
+fn run_starts(fixture: &StartFixture, installed: &[Provider]) -> SessionStarts {
+    let mut config = fixture.config();
+    config.environment.insert(
+        "PI_CODING_AGENT_DIR".into(),
+        fixture.root.join("pi-agent").to_string_lossy().into(),
+    );
+    config.environment.insert(
+        "XDG_DATA_HOME".into(),
+        fixture.root.join("xdg-data").to_string_lossy().into(),
+    );
+    let mut starts =
+        SessionStarts::with_runner(config, fixture.receipts(), fixture.fake.clone()).unwrap();
+    starts.set_application_folders(Vec::new());
+    starts.set_commands(
+        installed
+            .iter()
+            .map(|provider| (*provider, fixture.root.join("bin").join(provider.as_str())))
+            .collect(),
+    );
+    starts
+}
+/// The fixture's sessions with a Pi and an OpenCode session in the project.
+fn run_sessions(fixture: &StartFixture) -> Vec<Value> {
+    let mut sessions = fixture.sessions();
+    for (id, source) in [("pi:01a1cbbb", "pi"), ("opencode:ses_1", "opencode")] {
+        sessions.push(json!({"id":id,"source":source,"cwd":fixture.home().join("project"),"updatedAt":"2026-10-21T11:00:00Z","parentId":null}));
+    }
+    sessions
+}
+fn ended(code: i32, stderr: &str) -> ProcessOutput {
+    ProcessOutput {
+        code: Some(code),
+        stdout: Vec::new(),
+        stderr: stderr.as_bytes().to_vec(),
+        timed_out: false,
+    }
+}
+
+#[test]
+fn pi_and_opencode_are_offered_only_where_their_command_line_is() {
+    let fixture = StartFixture::new();
+    let offered = |starts: &SessionStarts| {
+        starts
+            .offers_for(&run_sessions(&fixture))
+            .into_iter()
+            .map(|offer| offer.provider)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        offered(&run_starts(&fixture, &[])),
+        [Provider::Claude, Provider::Codex]
+    );
+    assert_eq!(
+        offered(&run_starts(&fixture, &[Provider::OpenCode])),
+        [Provider::Claude, Provider::Codex, Provider::OpenCode]
+    );
+    let starts = run_starts(&fixture, &[Provider::Pi, Provider::OpenCode]);
+    let offers = starts.offers_for(&run_sessions(&fixture));
+    for provider in [Provider::Pi, Provider::OpenCode] {
+        let offer = offers
+            .iter()
+            .find(|offer| offer.provider == provider)
+            .unwrap();
+        // A run of the command line, in its own sessions' projects or a task
+        // folder of its own.
+        assert_eq!(offer.app, "cli");
+        assert_eq!(offer.folders, ["~/project"]);
+        assert!(offer.without_folder);
+    }
+}
+
+#[test]
+fn pi_files_a_session_under_its_folder_spelled_with_dashes() {
+    assert_eq!(
+        pi_names(Path::new(r"\Users\me\my project")),
+        ["--Users-me-my project--"]
+    );
+    assert_eq!(
+        pi_names(Path::new(r"C:\Users\me\proj")),
+        ["--C--Users-me-proj--"]
+    );
+}
+fn pi_names(folder: &Path) -> Vec<String> {
+    super::runs::pi_folders(folder)
+}
+
+#[test]
+fn a_pi_start_runs_pi_with_its_first_message_on_standard_input() {
+    let fixture = StartFixture::new();
+    let mut starts = run_starts(&fixture, &[Provider::Pi]);
+    starts.update_offers(&run_sessions(&fixture));
+    let sessions = fixture.root.join("pi-agent/sessions");
+    // Pi saves the session under the id it was given, in the folder it runs in.
+    *fixture.fake.on_launch.lock().unwrap() = Some(Box::new(move |plan, _| {
+        let folder = plan.directory.as_ref().unwrap();
+        let id = &plan.arguments[2];
+        let saved = sessions.join(&super::runs::pi_folders(folder)[0]);
+        crate::os::private_directory(&saved).unwrap();
+        fs::write(
+            saved.join(format!("2026-11-19T15-27-22-581Z_{id}.jsonl")),
+            "{}",
+        )
+        .unwrap();
+        None
+    }));
+    let text = "@README.md says \"hi\" %PATH%\nand more";
+    let receipt = starts
+        .start(StartRequest {
+            provider: Provider::Pi,
+            text: text.into(),
+            ..fixture.request()
+        })
+        .unwrap();
+    assert_eq!(receipt.state, "started", "{:?}", receipt.reason);
+    assert_eq!(receipt.session_id, Some(format!("pi:{REQUEST}")));
+    let launches = fixture.fake.launches();
+    let (plan, input) = &launches[0];
+    assert_eq!(plan.executable, fixture.root.join("bin/pi"));
+    assert_eq!(plan.arguments, ["-p", "--session-id", REQUEST]);
+    assert_eq!(
+        plan.directory.as_deref(),
+        Some(&*fixture.home().join("project"))
+    );
+    // Told its folder by PWD too, which OpenCode reads first.
+    assert_eq!(
+        plan.environment.get("PWD").map(PathBuf::from),
+        Some(fixture.home().join("project"))
+    );
+    // The words go in whole on standard input, never as an argument.
+    assert_eq!(input, text);
+    // Started once: the same request returns its receipt.
+    let again = starts
+        .start(StartRequest {
+            provider: Provider::Pi,
+            text: text.into(),
+            ..fixture.request()
+        })
+        .unwrap();
+    assert_eq!(again.session_id, receipt.session_id);
+    assert_eq!(fixture.fake.launches().len(), 1);
+}
+
+#[test]
+fn a_run_that_ends_before_it_saves_a_session_is_refused_with_what_it_said() {
+    let fixture = StartFixture::new();
+    let mut starts = run_starts(&fixture, &[Provider::Pi]);
+    starts.update_offers(&run_sessions(&fixture));
+    *fixture.fake.on_launch.lock().unwrap() = Some(Box::new(|_, _| {
+        Some(ended(
+            1,
+            "Warning: creating a new session\n\u{1b}[91m\u{1b}[1mError: \u{1b}[0mNo API key found for mock\n\u{1b}[0m\n",
+        ))
+    }));
+    let receipt = starts
+        .start(StartRequest {
+            provider: Provider::Pi,
+            folder: String::new(),
+            ..fixture.request()
+        })
+        .unwrap();
+    assert_eq!(receipt.state, "rejected");
+    assert!(receipt.session_id.is_none());
+    // The last line it wrote says why.
+    assert!(receipt
+        .reason
+        .unwrap()
+        .contains("Pi ended before it started a session: Error: No API key found for mock"));
+    // Its task folder, made for this start, is gone again.
+    assert!(!fixture.root.join("tasks/pi").join(REQUEST).exists());
+}
+
+#[test]
+fn a_run_starts_in_the_clients_own_model() {
+    let fixture = StartFixture::new();
+    let mut starts = run_starts(&fixture, &[Provider::OpenCode]);
+    starts.update_offers(&run_sessions(&fixture));
+    let receipt = starts
+        .start(StartRequest {
+            provider: Provider::OpenCode,
+            model: Some("anthropic/claude-sonnet".into()),
+            ..fixture.request()
+        })
+        .unwrap();
+    assert_eq!(receipt.state, "rejected");
+    assert!(receipt.reason.unwrap().contains("model it chooses itself"));
+    assert!(fixture.fake.launches().is_empty());
+    assert!(!starts.model_at_start(Provider::OpenCode));
+}
+
+#[test]
+fn an_opencode_start_finds_its_new_session_in_opencodes_database() {
+    let fixture = StartFixture::new();
+    let mut starts = run_starts(&fixture, &[Provider::OpenCode]);
+    starts.update_offers(&run_sessions(&fixture));
+    let data = fixture.root.join("xdg-data/opencode");
+    // OpenCode 1.19's table, as far as a start reads it: an older session in
+    // the same folder, a task's child session and another folder's session
+    // are not the one this run made.
+    *fixture.fake.on_launch.lock().unwrap() = Some(Box::new(move |plan, _| {
+        let folder = plan
+            .directory
+            .as_ref()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        crate::os::private_directory(&data).unwrap();
+        let db = rusqlite::Connection::open(data.join("opencode.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE session (id text PRIMARY KEY, parent_id text, directory text NOT NULL, time_created integer NOT NULL)",
+        )
+        .unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        for (id, parent, directory, at) in [
+            ("ses_old", None, folder.as_str(), now - 60_000),
+            ("ses_new", None, folder.as_str(), now + 5),
+            ("ses_task", Some("ses_new"), folder.as_str(), now + 9),
+            ("ses_elsewhere", None, "/elsewhere", now),
+        ] {
+            db.execute(
+                "INSERT INTO session VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![id, parent, directory, at],
+            )
+            .unwrap();
+        }
+        None
+    }));
+    let receipt = starts
+        .start(StartRequest {
+            provider: Provider::OpenCode,
+            folder: String::new(),
+            ..fixture.request()
+        })
+        .unwrap();
+    assert_eq!(receipt.state, "started", "{:?}", receipt.reason);
+    assert_eq!(receipt.session_id.as_deref(), Some("opencode:ses_new"));
+    let (plan, input) = &fixture.fake.launches()[0];
+    assert_eq!(plan.arguments, ["run"]);
+    // A task of its own, in a folder made for it.
+    assert_eq!(
+        plan.directory.as_deref(),
+        Some(&*fixture.root.join("tasks/opencode").join(REQUEST))
+    );
+    assert_eq!(input, "Look at the failing test");
 }

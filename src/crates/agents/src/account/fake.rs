@@ -2,12 +2,16 @@ use super::*;
 use crate::{Base, Os};
 use std::{
     cell::RefCell,
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     path::{Path, PathBuf},
     rc::Rc,
     sync::atomic::{AtomicBool, Ordering},
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+#[path = "fake_engine.rs"]
+mod fake_engine;
+pub use fake_engine::FakeEngine;
 
 pub struct FakeHost {
     pub os: Os,
@@ -16,13 +20,14 @@ pub struct FakeHost {
     pub account_homes: HashMap<String, Vec<PathBuf>>,
     pub account_reports: HashMap<String, Vec<Value>>,
     pub files: HashMap<PathBuf, Answer<Vec<u8>>>,
+    /// Every file and database read, by path, and safe storage, by app.
+    pub read: RefCell<Vec<PathBuf>>,
     /// Canonical targets for paths that resolve to another location.
     pub canonical_paths: HashMap<PathBuf, PathBuf>,
     pub secrets: HashMap<String, Answer<String>>,
     /// Desktop apps' cookies, by app, site and name joined with "|".
     pub cookies: HashMap<String, Answer<String>>,
-    /// Electron safe-storage blobs this host can open, by the exact
-    /// ciphertext `encryptString` produced.
+    /// Electron safe-storage blobs this host can open, by exact ciphertext.
     pub sealed: HashMap<Vec<u8>, Answer<String>>,
     pub saved: Result<Option<Value>, String>,
     /// File details by path; a listed file without them is a small regular file.
@@ -33,8 +38,7 @@ pub struct FakeHost {
     pub consent: AtomicBool,
     /// Answers by URL; a URL not listed is unreachable.
     pub web: HashMap<String, Result<Value, HttpFailure>>,
-    /// Sessions signed in in Agent HUD's window, by provider and host
-    /// joined with "|".
+    /// Sessions signed in in Agent HUD's window, by `provider|host`.
     pub web_sessions: HashMap<String, WebSession>,
     /// Answers by URL and the `Authorization` sent, before `web`.
     pub web_for: HashMap<(String, String), Result<Value, HttpFailure>>,
@@ -52,8 +56,7 @@ pub struct FakeHost {
     pub executables: HashMap<String, PathBuf>,
     /// What every engine answers, by the id of the request it answers.
     pub engine_replies: HashMap<u64, Value>,
-    /// Engine replies for a particular account home, the one an engine
-    /// is started with in `CODEX_HOME` or `CLAUDE_CONFIG_DIR`.
+    /// Engine replies by the account home an engine is started with.
     pub engine_replies_by_home: HashMap<PathBuf, HashMap<u64, Value>>,
     /// What an engine prints as soon as it starts, by its first argument.
     pub engine_output: HashMap<String, Vec<Value>>,
@@ -61,9 +64,10 @@ pub struct FakeHost {
     pub engine_output_by_home: HashMap<PathBuf, HashMap<String, Vec<Value>>>,
     /// Engine start failures, by the first argument.
     pub engine_start_errors: HashMap<String, String>,
-    /// Whether an engine's output ends once it has nothing more to say,
-    /// as when it exits; otherwise its wait runs out.
+    /// Whether an engine's output ends once it has nothing more to say.
     pub engine_ends: bool,
+    /// Quota reading levels by agent; an agent not listed reads in full.
+    pub quota_levels: HashMap<String, QuotaReading>,
     /// Every engine started: program, arguments, folder and environment.
     pub started: RefCell<Vec<(PathBuf, Vec<String>, String, Vec<(String, String)>)>>,
     /// Every message sent to an engine.
@@ -78,6 +82,7 @@ impl FakeHost {
             account_homes: HashMap::new(),
             account_reports: HashMap::new(),
             files: HashMap::new(),
+            read: RefCell::new(vec![]),
             canonical_paths: HashMap::new(),
             secrets: HashMap::new(),
             cookies: HashMap::new(),
@@ -102,6 +107,7 @@ impl FakeHost {
             engine_output_by_home: HashMap::new(),
             engine_start_errors: HashMap::new(),
             engine_ends: true,
+            quota_levels: HashMap::new(),
             started: RefCell::new(vec![]),
             engine_sent: Rc::new(RefCell::new(vec![])),
         }
@@ -156,19 +162,23 @@ impl Host for FakeHost {
         if let Some(info) = self.info.get(path) {
             return Answer::Found(*info);
         }
+        if self.databases.contains_key(path) {
+            return Answer::Found(FileInfo {
+                len: 4096,
+                modified_ms: None,
+                symlink: false,
+            });
+        }
         match self.files.get(path) {
             Some(Answer::Found(bytes)) => Answer::Found(FileInfo {
                 len: bytes.len() as u64,
                 modified_ms: None,
                 symlink: false,
             }),
-            Some(other) => match other {
-                Answer::Missing => Answer::Missing,
-                Answer::Unsupported => Answer::Unsupported,
-                Answer::Denied => Answer::Denied,
-                _ => Answer::Failed,
-            },
-            None => Answer::Missing,
+            Some(Answer::Unsupported) => Answer::Unsupported,
+            Some(Answer::Denied) => Answer::Denied,
+            Some(Answer::Missing) | None => Answer::Missing,
+            Some(_) => Answer::Failed,
         }
     }
     /// The files and folders right under `path`, folders implied by the
@@ -253,6 +263,7 @@ impl Host for FakeHost {
         self.env.get(name).map(String::as_str)
     }
     fn read_file(&self, path: &Path, limit: u64) -> Answer<Vec<u8>> {
+        self.read.borrow_mut().push(path.into());
         match self.files.get(path) {
             Some(Answer::Found(bytes)) => {
                 Answer::Found(bytes[..bytes.len().min(limit as usize + 1)].to_vec())
@@ -282,11 +293,13 @@ impl Host for FakeHost {
             .unwrap_or(Answer::Missing)
     }
     fn unseal_safe_storage(&self, app: &str, encrypted: &[u8]) -> Answer<String> {
-        if app != "Cursor" {
-            return Answer::Unsupported;
-        }
+        self.read.borrow_mut().push(app.into());
+        let mut scoped = app.as_bytes().to_vec();
+        scoped.push(b'|');
+        scoped.extend_from_slice(encrypted);
         self.sealed
-            .get(encrypted)
+            .get(&scoped)
+            .or_else(|| self.sealed.get(encrypted))
             .cloned()
             .unwrap_or(Answer::Unsupported)
     }
@@ -300,6 +313,9 @@ impl Host for FakeHost {
     }
     fn consented(&self, _setting: &str) -> bool {
         self.consent.load(Ordering::Acquire)
+    }
+    fn quota_reading(&self, agent: &str) -> QuotaReading {
+        *self.quota_levels.get(agent).unwrap_or(&QuotaReading::Full)
     }
     fn http_json(&self, request: &HttpRequest) -> Result<Value, HttpFailure> {
         let pairs = |list: &[(&str, &str)]| {
@@ -318,13 +334,7 @@ impl Host for FakeHost {
         self.sent
             .borrow_mut()
             .push((pairs(request.secrets), request.body.cloned()));
-        self.headers.borrow_mut().push(
-            request
-                .headers
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                .collect(),
-        );
+        self.headers.borrow_mut().push(pairs(request.headers));
         authorization
             .and_then(|sent| self.web_for.get(&(request.url.to_owned(), sent)))
             .or_else(|| self.web.get(request.url))
@@ -338,6 +348,7 @@ impl Host for FakeHost {
         params: &[&str],
         wait: Duration,
     ) -> Result<Vec<Vec<Value>>, DatabaseFailure> {
+        self.read.borrow_mut().push(path.into());
         let real = self.databases.get(path).ok_or(DatabaseFailure::Missing)?;
         crate::sqlite::rows(real, sql, params, wait)
     }
@@ -351,43 +362,5 @@ impl Host for FakeHost {
     fn write_own(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
         self.own.borrow_mut().insert(name.into(), bytes.to_vec());
         Ok(())
-    }
-}
-
-/// An engine that answers each request with the reply scripted for its id.
-pub struct FakeEngine {
-    replies: HashMap<u64, Value>,
-    ends: bool,
-    queue: VecDeque<Value>,
-    ended: bool,
-    sent: Rc<RefCell<Vec<Value>>>,
-}
-impl Engine for FakeEngine {
-    fn send(&mut self, value: &Value) -> Result<(), String> {
-        self.sent.borrow_mut().push(value.clone());
-        if let Some(reply) = value["id"].as_u64().and_then(|id| self.replies.get(&id)) {
-            self.queue.push_back(reply.clone());
-        }
-        Ok(())
-    }
-    fn next(&mut self, _deadline: Instant) -> Option<Value> {
-        let next = self.queue.pop_front();
-        if next.is_none() && self.ends {
-            self.ended = true;
-        }
-        next
-    }
-    fn ended(&self) -> bool {
-        self.ended
-    }
-    fn joined(&mut self, deadline: Instant) -> Option<Value> {
-        let body = self.next(deadline);
-        if self.queue.is_empty() && self.ends {
-            self.ended = true;
-        }
-        body
-    }
-    fn stderr_preview(&self, _limit: usize) -> Option<String> {
-        None
     }
 }

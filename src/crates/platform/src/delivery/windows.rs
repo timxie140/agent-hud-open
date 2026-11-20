@@ -7,7 +7,7 @@ use std::{
 };
 
 pub(crate) fn discover_codex_per_operation() -> bool {
-    crate::os::tracks_registered_codex()
+    true
 }
 
 /// Makes `path` a folder only this user can open (`crate::os::private_directory`).

@@ -1,4 +1,4 @@
-// The host calls behind Agent plugins: which clients have Agent HUD's MCP
+// The host calls behind what Agent HUD puts into agents: which clients have Agent HUD's MCP
 // server, and the state of Agent HUD's Claude Code and DeepSeek Harness
 // plugins. Pictures and tests pass fakes with the same shapes.
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -79,6 +79,14 @@ export const knownClients: {
     plugin: { live: true },
   },
   { id: "antigravity", name: "Antigravity", logo: "antigravity" },
+  { id: "zcode", name: "ZCode", logo: "zcode" },
+  { id: "workbuddy", name: "WorkBuddy", logo: "workbuddy" },
+  { id: "kimi", name: "Kimi Code", logo: "kimi" },
+  { id: "qoder", name: "Qoder", logo: "qoder" },
+  { id: "trae", name: "TRAE", logo: "trae" },
+  { id: "traeCn", name: "TRAE CN", logo: "trae" },
+  { id: "pi", name: "Pi", logo: "pi" },
+  { id: "opencode", name: "OpenCode", logo: "opencode" },
 ];
 
 /** The last statuses read, so the page opens without a blank. */

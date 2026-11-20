@@ -10,6 +10,9 @@ use std::{
     },
 };
 use tauri::Manager;
+
+mod caller;
+use caller::with_caller;
 enum ChannelState {
     Disabled,
     Listening(Server),
@@ -109,7 +112,13 @@ fn handle(
             ));
         }
         let plugin = app.state::<super::deepseek_plugin::DeepSeekPlugin>();
-        let params = with_caller(plugin.channel(), params, std::time::SystemTime::now());
+        let data = agent_hud_runtime::local_tools_directory().ok();
+        let params = with_caller(
+            (plugin.channel(), data.as_deref()),
+            snapshot.as_deref(),
+            params,
+            std::time::SystemTime::now(),
+        );
         return messages.ok_or("Application data is loading")?.call(&params);
     }
     let mut owner = backend.lock().unwrap_or_else(PoisonError::into_inner);
@@ -177,34 +186,6 @@ pub(super) fn channel_wanted(settings: &Value) -> bool {
     settings["hudTools"] == true || settings["agentMessages"] == true
 }
 
-/// The DeepSeek Harness session that called a host tool, when the relay
-/// could not tell: Harness runs one relay per host for all its sessions, so
-/// the relay says only which process started it (`parent`), and Agent HUD's
-/// plugin in that host notes which session is making the call
-/// (`deepseek_plugin`). `parent` itself never reaches the product.
-fn with_caller(
-    channel: &agent_hud_runtime::deepseek_plugin::DeepSeekChannel,
-    mut params: Value,
-    now: std::time::SystemTime,
-) -> Value {
-    let parent = params
-        .as_object_mut()
-        .and_then(|params| params.remove("parent"))
-        .and_then(|parent| parent.as_u64())
-        .and_then(|parent| u32::try_from(parent).ok());
-    if !params["caller"].is_null() {
-        return params;
-    }
-    let found = parent
-        .and_then(|host| channel.caller(host, params["name"].as_str()?, &params["arguments"], now));
-    if let Some(session) = found {
-        use agent_hud_runtime::hud_tools::Client;
-        params["caller"] =
-            json!({"client": Client::DeepSeek.id(), "sessionId": session, "turnId": null});
-    }
-    params
-}
-
 /// The statistics query for the token chart's catalog: the 30 days up to the
 /// snapshot, the chart's longest period. Nil without a readable snapshot time.
 fn token_catalog(generated_at: &Value) -> Option<Value> {
@@ -217,6 +198,7 @@ fn token_catalog(generated_at: &Value) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
+    use super::caller::hook_caller;
     use super::*;
 
     #[test]
@@ -235,24 +217,27 @@ mod tests {
         let now = std::time::SystemTime::now();
         let call = |parent: Value, caller: Value| json!({"name":"some_tool","arguments":{"text":"hi"},"caller":caller,"parent":parent});
         assert_eq!(
-            with_caller(&channel, call(json!(777), Value::Null), now),
+            with_caller((&channel, None), None, call(json!(777), Value::Null), now),
             json!({"name":"some_tool","arguments":{"text":"hi"},"caller":{"client":"deepseek","sessionId":"session-a","turnId":null}})
         );
         // Another host, or a parent that is not a process id: the caller stays unknown.
         for parent in [json!(778), json!("777")] {
             assert_eq!(
-                with_caller(&channel, call(parent, Value::Null), now),
+                with_caller((&channel, None), None, call(parent, Value::Null), now),
                 json!({"name":"some_tool","arguments":{"text":"hi"},"caller":null})
             );
         }
         // A caller the client named itself is kept.
         let codex = json!({"client":"codex","sessionId":"t","turnId":null});
         assert_eq!(
-            with_caller(&channel, call(json!(777), codex.clone()), now)["caller"],
+            with_caller((&channel, None), None, call(json!(777), codex.clone()), now)["caller"],
             codex
         );
         // Other host methods pass as they came.
-        assert_eq!(with_caller(&channel, json!({}), now), json!({}));
+        assert_eq!(
+            with_caller((&channel, None), None, json!({}), now),
+            json!({})
+        );
     }
 
     #[test]
@@ -275,5 +260,76 @@ mod tests {
         for method in ["status", "snapshot", "get_hud", "send_message"] {
             assert!(!HOST_METHODS.contains(&method));
         }
+    }
+
+    #[test]
+    fn a_hook_clients_call_is_named_by_the_process_its_session_runs_from() {
+        let session = |id: &str, source: &str, state: &str, pids: Value| json!({"id":id,"source":source,"state":"idle","parentId":null,"hooks":{"pids":pids,"state":state}});
+        let snapshot = json!({"sessions":[
+            // Two command-line sessions, one process each.
+            session("kimi:session_a:main","kimi","running",json!([801, 800])),
+            session("kimi:session_b:main","kimi","idle",json!([811, 810])),
+            // A desktop app's chats, all from one process.
+            session("trae:x","trae","idle",json!([900, 901])),
+            session("trae:y","trae","running",json!([900, 901])),
+            session("trae:z","trae","running",json!([900, 901])),
+            session("cursor:q","cursor","idle",json!([950])),
+            session("cursor:r","cursor","idle",json!([950])),
+        ]});
+        let named = |parent| hook_caller(&[parent], &snapshot).map(|c| c["sessionId"].clone());
+        assert_eq!(named(800), Some(json!("kimi:session_a:main")));
+        assert_eq!(named(810), Some(json!("kimi:session_b:main")));
+        // Two TRAE chats mid-turn: which one called is unknown.
+        assert_eq!(named(900), None);
+        // None mid-turn: unknown too.
+        assert_eq!(named(950), None);
+        assert_eq!(named(1234), None);
+        let one_running = json!({"sessions":[
+            session("trae:x","trae","idle",json!([900])),
+            session("trae:y","trae","running",json!([900])),
+        ]});
+        assert_eq!(
+            hook_caller(&[900], &one_running),
+            Some(json!({"client":"trae","sessionId":"trae:y","turnId":null}))
+        );
+        // TRAE runs its hooks from one helper and its MCP servers from
+        // another: they meet at the app's own process, above both.
+        let helpers = json!({"sessions":[
+            session("trae:y","trae","running",json!([7024, 7023, 5781, 5759])),
+            session("kimi:session_c:main","kimi","idle",json!([601, 600])),
+        ]});
+        assert_eq!(
+            hook_caller(&[5777, 5759], &helpers).map(|c| c["sessionId"].clone()),
+            Some(json!("trae:y"))
+        );
+        // The nearest process decides: a session started by the relay's own
+        // parent wins over the app above it.
+        assert_eq!(
+            hook_caller(&[600, 5759], &helpers).map(|c| c["sessionId"].clone()),
+            Some(json!("kimi:session_c:main"))
+        );
+        // Kimi started from a Claude Code shell inherits Claude Code's session
+        // id; its own hooks win over it. Codex's own naming stays.
+        let channel = agent_hud_runtime::deepseek_plugin::DeepSeekChannel::new(
+            tempfile::tempdir().unwrap().keep(),
+        );
+        let call = |caller: Value| json!({"name":"send_message","arguments":{},"caller":caller,"parent":800});
+        let now = std::time::SystemTime::now();
+        let claude = json!({"client":"claude","sessionId":"c","turnId":null});
+        assert_eq!(
+            with_caller((&channel, None), Some(&snapshot), call(claude.clone()), now)["caller"]
+                ["sessionId"],
+            "kimi:session_a:main"
+        );
+        let codex = json!({"client":"codex","sessionId":"t","turnId":null});
+        assert_eq!(
+            with_caller((&channel, None), Some(&snapshot), call(codex.clone()), now)["caller"],
+            codex
+        );
+        let elsewhere = json!({"name":"x","arguments":{},"caller":claude.clone(),"parent":4242});
+        assert_eq!(
+            with_caller((&channel, None), Some(&snapshot), elsewhere, now)["caller"],
+            claude
+        );
     }
 }

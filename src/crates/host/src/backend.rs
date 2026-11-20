@@ -5,12 +5,13 @@ use crate::{
 };
 use agent_hud_runtime::Runtime;
 use serde_json::Value;
-use std::sync::{Arc, PoisonError};
+use std::sync::{Arc, PoisonError, RwLock};
 use tauri::Manager;
 
 pub(crate) struct Backend {
     pub(crate) runtime: Runtime,
     pub(crate) snapshot: Option<Arc<Value>>,
+    pub(crate) latest_snapshot: Arc<RwLock<Option<Arc<Value>>>>,
     /// The display preferences' revision the cached snapshot was projected
     /// with; a pass after they change renders again even if Core has nothing new.
     pub(crate) projected: Option<u64>,
@@ -30,6 +31,7 @@ impl Backend {
             &mut value,
             self.snapshot.as_deref().map(|v| &v["connection"]["dot"]),
         );
+        crate::appearance::remember(app, &value["settings"]);
         if let Some(tools) = &self.tools {
             value["connection"]["localTools"] =
                 tools.configure(tools::channel_wanted(&value["settings"]));
@@ -42,6 +44,10 @@ impl Backend {
         // Every pass retains its current generatedAt. Move, do not deep-clone,
         // the new projection into the one application cache, even on quiet passes.
         self.snapshot = Some(Arc::new(value));
+        *self
+            .latest_snapshot
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = self.snapshot.clone();
         if changed || recovered {
             self.publish_snapshot(app);
             if let (Some(extension), Some(snapshot)) = (&self.extension, &self.snapshot) {

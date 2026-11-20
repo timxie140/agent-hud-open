@@ -1,32 +1,32 @@
 //! Public AppKit HUD operations. The pinned creation-time adapter allocates an
 //! NSPanel subclass for HUDs while ordinary Tauri windows remain NSWindow.
-use super::{LogicalRect, Point, PointerKeys, Rect, Shared};
+use super::{LogicalRect, Rect};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
-    NSCursor, NSScreen, NSStatusWindowLevel, NSWindow, NSWindowAnimationBehavior,
-    NSWindowCollectionBehavior,
+    NSScreen, NSStatusWindowLevel, NSWindow, NSWindowAnimationBehavior, NSWindowCollectionBehavior,
 };
 use objc2_core_foundation::CFUUID;
-use objc2_foundation::NSPoint;
 use std::ptr::NonNull;
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
-    time::Duration,
-};
+use std::{sync::mpsc, time::Duration};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+#[path = "macos/canvas.rs"]
+mod canvas;
 #[path = "macos/displays.rs"]
 mod displays;
 #[path = "macos/text_focus.rs"]
 mod text_focus;
+use canvas::{clear_under_page, hold_page};
 pub(super) use displays::{measure_screens, screen};
 pub(super) use text_focus::{begin_text_focus, end_text_focus, TextFocusOrigin};
+#[path = "macos/pointer.rs"]
+mod pointer;
+pub(super) use pointer::{global_pointer, left_mouse_down, pointer_keys, set_drag_cursor};
 
 /// NSEvent reports the pointer in one global point plane across displays.
 pub(super) const GLOBAL_POINTS: bool = true;
 pub(super) const COORDINATE_SPACE: &str = "global-logical-top-left";
+/// The top edge and the Notch HUD sit over the menu bar on purpose.
+pub(super) const DOCK_IN_WORK_AREA: bool = false;
 
 pub(super) fn native_drag() -> bool {
     true
@@ -34,6 +34,14 @@ pub(super) fn native_drag() -> bool {
 
 pub(super) fn fixed_canvas() -> bool {
     false
+}
+
+/// Tauri itself reloads a WKWebView whose content process ended.
+pub(super) fn watch_page(
+    _window: &tauri::WebviewWindow,
+    _on_event: std::sync::Arc<dyn Fn(super::recovery::PageEvent) + Send + Sync>,
+) -> Result<(), String> {
+    Ok(())
 }
 
 /// The HUD is a nonactivating NSPanel, chosen before allocation.
@@ -50,19 +58,18 @@ pub(super) fn panel_builder<'a>(
 pub(super) fn place(
     window: &tauri::WebviewWindow,
     frame: Rect,
+    canvas: Rect,
     scale: f64,
     mode: super::types::Mode,
 ) -> Result<LogicalRect, String> {
-    configure(
-        window,
-        mode,
-        LogicalRect {
-            x: f64::from(frame.x) / scale,
-            y: f64::from(frame.y) / scale,
-            width: f64::from(frame.width) / scale,
-            height: f64::from(frame.height) / scale,
-        },
-    )
+    clear_under_page(window);
+    let logical = |rect: Rect| LogicalRect {
+        x: f64::from(rect.x) / scale,
+        y: f64::from(rect.y) / scale,
+        width: f64::from(rect.width) / scale,
+        height: f64::from(rect.height) / scale,
+    };
+    configure(window, mode, logical(frame), logical(canvas))
 }
 
 /// The panel is ordered without Tao's show(), so the configuration says
@@ -87,64 +94,9 @@ pub(super) fn set_ignore_cursor(
         .map_err(|error| error.to_string())
 }
 
-/// macOS only takes a cursor from the key window, and this nonactivating panel
-/// is never key. Like the original Swift HUD, it becomes key while held without
-/// activating the app, and resigns key (without orderOut) when released.
-pub(super) fn set_drag_cursor(app: &tauri::AppHandle, owner: &Shared, active: bool) {
-    static HELD_KEY: AtomicBool = AtomicBool::new(false);
-    if let Some(window) = app.get_webview_window(&owner.label) {
-        if active && !HELD_KEY.swap(true, Ordering::AcqRel) {
-            let _ = window.set_focusable(true);
-            let _ = begin_text_focus(&window);
-        } else if !active && HELD_KEY.swap(false, Ordering::AcqRel) {
-            let _ = resign_drag_key(&window);
-            let _ = window.set_focusable(false);
-        }
-    }
-    if let Err(error) = cursor(app, active) {
-        eprintln!("Agent HUD drag cursor: {error}");
-    }
-}
-
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGDisplayCreateUUIDFromDisplayID(display: u32) -> Option<NonNull<CFUUID>>;
-    fn CGMainDisplayID() -> u32;
-    fn CGDisplayPixelsHigh(display: u32) -> usize;
-}
-
-pub(super) fn left_mouse_down() -> Result<bool, String> {
-    // NSEvent's public class property reports button state outside our non-key window as
-    // well. This is a state query, not an event tap or global keyboard listener; AX is unused.
-    let buttons: usize = unsafe { objc2::msg_send![objc2::class!(NSEvent), pressedMouseButtons] };
-    Ok(buttons & 1 != 0)
-}
-
-pub(super) fn pointer_keys() -> PointerKeys {
-    // Public class properties also work when this non-key window passes events through.
-    // NSEvent and DOM use the same left/right/middle bits for the first five buttons.
-    let buttons: usize = unsafe { objc2::msg_send![objc2::class!(NSEvent), pressedMouseButtons] };
-    let modifiers: usize = unsafe { objc2::msg_send![objc2::class!(NSEvent), modifierFlags] };
-    PointerKeys {
-        buttons: Some((buttons & 0x1f) as u32),
-        alt: Some(modifiers & (1 << 19) != 0),
-        ctrl: Some(modifiers & (1 << 18) != 0),
-        meta: Some(modifiers & (1 << 20) != 0),
-        shift: Some(modifiers & (1 << 17) != 0),
-    }
-}
-
-pub(super) fn global_pointer(app: &tauri::AppHandle) -> Result<Point, String> {
-    let _ = app;
-    // NSEvent.mouseLocation and CoreGraphics display pixel height are thread-safe global
-    // state queries, just like pressedMouseButtons and modifierFlags above. Reading them
-    // directly avoids waking the main run loop every 32 ms while the pointer is at rest.
-    let point: NSPoint = unsafe { objc2::msg_send![objc2::class!(NSEvent), mouseLocation] };
-    let primary_height = unsafe { CGDisplayPixelsHigh(CGMainDisplayID()) } as f64;
-    Ok(Point {
-        x: point.x,
-        y: primary_height - point.y,
-    })
 }
 
 fn on_main<T: Send + 'static>(
@@ -167,38 +119,11 @@ fn on_main<T: Send + 'static>(
         .map_err(|_| "AppKit did not return screen geometry in time".to_owned())?
 }
 
-fn cursor(app: &tauri::AppHandle, active: bool) -> Result<(), String> {
-    on_main(app, move |_| {
-        if active {
-            NSCursor::closedHandCursor().set();
-        } else {
-            NSCursor::arrowCursor().set();
-        }
-        Ok(())
-    })
-}
-
-fn resign_drag_key(window: &tauri::WebviewWindow) -> Result<(), String> {
-    let retained_window = window.clone();
-    on_main(window.app_handle(), move |_| {
-        let pointer = retained_window
-            .ns_window()
-            .map_err(|error| error.to_string())?;
-        if !pointer.is_null() {
-            let native = unsafe { &*pointer.cast::<NSWindow>() };
-            if native.isKeyWindow() {
-                native.makeFirstResponder(None);
-                native.resignKeyWindow();
-            }
-        }
-        Ok(())
-    })
-}
-
 fn configure(
     window: &tauri::WebviewWindow,
     mode: super::types::Mode,
     requested: LogicalRect,
+    canvas: LogicalRect,
 ) -> Result<LogicalRect, String> {
     let retained_window = window.clone();
     on_main(window.app_handle(), move |marker| {
@@ -254,11 +179,13 @@ fn configure(
             native.setFrame_display(target, false);
         }
         let content = native.contentRectForFrameRect(native.frame());
-        Ok(LogicalRect {
+        let content = LogicalRect {
             x: content.origin.x,
             y: primary_top - content.origin.y - content.size.height,
             width: content.size.width,
             height: content.size.height,
-        })
+        };
+        hold_page(native, canvas, content);
+        Ok(content)
     })
 }

@@ -11,6 +11,9 @@ mod queue_wake;
 pub(crate) const SUPPORTED: bool = true;
 /// Exact native snapshot schemas qualified for private Windows owner delivery.
 pub(super) const STREAM_VERSIONS: &[u64] = &[11, 13];
+/// A new thread's first message goes through Codex's queue here, which the
+/// app that opens the thread runs in its own model: none can be named.
+pub(crate) const MODEL_AT_START: bool = false;
 /// What a send may ask for: start and steer through the desktop app, and
 /// Codex's queue. Interrupt is not offered.
 pub(crate) const OPERATIONS: &[Operation] = &[

@@ -8,9 +8,18 @@ impl Messaging {
             return;
         }
         let sessions: Vec<Value> = if self.preferences.enabled {
-            sessions(host.snapshot).filter(|row| row["source"] == "codex").take(100)
-                .map(|row| json!({"id":row["id"],"client":"codex","title":row["title"],
-                    "state":match state(row) { "running" => "running", "waitingForApproval" => "waiting", _ => "idle" }})).collect()
+            let loaded = self.loaded();
+            let language = language(host.snapshot);
+            sessions(host.snapshot)
+                .filter(|row| row["source"] == "codex")
+                .take(100)
+                .map(|row| {
+                    let id = row["id"].as_str().unwrap_or_default();
+                    let (steerable, _) = self.steerable("codex", id, row, &loaded, language);
+                    json!({"id":row["id"],"client":"codex","title":row["title"],
+                        "state":match state(row) { "running" => "running", "waitingForApproval" => "waiting", _ => "idle" },
+                        "steerable":steerable})
+                }).collect()
         } else {
             Vec::new()
         };
@@ -57,6 +66,34 @@ impl Messaging {
             self.refuse_dot(id, "recipient_unavailable");
             return;
         };
+        // Missing delivery retains the official queue default. Never infer a steer
+        // from recipient state, and never retry a refused steer as a queue.
+        let delivery = match claim.get("delivery") {
+            None | Some(Value::Null) => "queue",
+            Some(Value::String(value)) if value == "queue" => "queue",
+            Some(Value::String(value)) if value == "steer" => "steer",
+            _ => {
+                self.refuse_dot(id, "invalid_delivery");
+                return;
+            }
+        };
+        if let Some(value) = row.get("delivery") {
+            if !value.is_null() && value.as_str() != Some(delivery) {
+                self.refuse_dot(id, "delivery_mismatch");
+                return;
+            }
+        }
+        if delivery == "steer" {
+            if binding.parent.is_some() {
+                self.refuse_dot(id, "steer_reply_unsupported");
+                return;
+            }
+            let target = find_in(host.snapshot, "codex", &binding.to.session_id);
+            if target.is_none_or(|target| state(target) == "waitingForApproval") {
+                self.refuse_dot(id, "steer_unavailable");
+                return;
+            }
+        }
         let next_pass = binding
             .parent
             .as_ref()
@@ -88,15 +125,24 @@ impl Messaging {
             request_id: delivery_id.into(),
             text: delivered.clone(),
             form: PromptForm::Labelled,
-            operation: Operation::SteerOrEnqueue,
+            operation: if delivery == "steer" {
+                Operation::Steer
+            } else {
+                Operation::Enqueue
+            },
             expected_turn_id: None,
+            model: None,
         });
         let (state, native) = match &receipt {
             Ok(receipt) => {
                 use agent_hud_core::naming::surfaces::{Category, Surface};
                 self.clients
                     .delivered(receipt, &Surface::new(Category::Mcp, "dot"), now);
-                let state = delivered_or_refused(receipt.state);
+                let state = if receipt.state == DeliveryState::Steered {
+                    "steered"
+                } else {
+                    delivered_or_refused(receipt.state)
+                };
                 let native = match state {
                     "refused" => "refused",
                     "uncertain" => "uncertain",
@@ -104,6 +150,9 @@ impl Messaging {
                 };
                 (state, json!({"state":native,"deliveryMode":receipt.state}))
             }
+            Err(delivery::Failure::Rejected(_))
+            | Err(delivery::Failure::Unsupported(_))
+            | Err(delivery::Failure::Unavailable(_)) => ("refused", json!({"state":"refused"})),
             Err(_) => ("uncertain", json!({"state":"uncertain"})),
         };
         // The claim is durable even if completion or journal publication fails.
@@ -139,6 +188,11 @@ impl Messaging {
             turn: None,
             answered: false,
             replied_by: None,
+            steered_into: receipt
+                .as_ref()
+                .ok()
+                .filter(|r| r.state == DeliveryState::Steered)
+                .and_then(|r| r.turn_id.clone()),
         });
         (self.fly)(flight(
             &sender,
@@ -147,7 +201,10 @@ impl Messaging {
             false,
             matches!(state, "refused" | "uncertain"),
         ));
-        if let Some(parent) = binding.parent {
+        if let Some(parent) = binding
+            .parent
+            .filter(|_| !matches!(state, "refused" | "uncertain"))
+        {
             if let Some(parent) = self.journal.messages_mut().find(|p| p.id == parent.id) {
                 parent.replied_by = Some(delivery_id.into());
                 parent.answered = true;

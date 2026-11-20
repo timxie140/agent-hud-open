@@ -238,6 +238,8 @@ fn the_app_server_reports_limits_and_the_account() {
     assert_eq!(account["id"], identity.as_str());
     assert_eq!(account["label"], "A@example.com");
     assert_eq!(account["plan"], "pro");
+    // A signed-in email: a phone joins this account's readings from every computer.
+    assert_eq!(account["identity"], "account");
     assert_eq!(reading.quotas.len(), 2);
     assert_eq!(reading.quotas[0]["consumerSource"], "codex");
     assert_eq!(reading.quotas[1]["usedPercent"], 40.0);
@@ -479,16 +481,86 @@ fn a_pi_error_preserves_an_additional_homes_error() {
     assert!(notice.contains("Sign in to ChatGPT again in Pi"));
 }
 
+/// An id token whose claims name `email`.
+fn id_token(email: &str) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    let claims = URL_SAFE_NO_PAD.encode(json!({"email": email}).to_string());
+    format!("e30.{claims}.sig")
+}
+
+/// Codex left the email out: the home's own sign-in names it, so the reading
+/// is the account a full reading is, not a second one keyed by half.
 #[test]
-fn an_expired_pi_sign_in_is_a_notice_beside_codex() {
-    let host = installed(limits(), json!({"email": "a@example.com"})).file(
-        "/u/.pi/agent/auth.json",
-        r#"{"openai-codex": {"type": "oauth", "access": "tok", "accountId": "acc", "expires": 1}}"#,
+fn the_homes_sign_in_completes_an_email_codex_left_out() {
+    let host = installed(limits(), Value::Null).file(
+        "/u/.codex/auth.json",
+        &json!({"tokens": {"account_id": "ws", "id_token": id_token("A@example.com")}}).to_string(),
     );
-    let reading = read(&host).unwrap();
-    assert_eq!(reading.quotas.len(), 2);
+    let account = read(&host).unwrap().account.unwrap();
+    assert_eq!(account["label"], "A@example.com");
     assert_eq!(
-        reading.notice.as_deref(),
-        Some("Sign in to ChatGPT again in Pi")
+        account["id"],
+        legacy_account("Codex", "a@example.com", "ws").unwrap()
     );
+}
+
+/// A sign-in for another workspace says nothing of this one's email.
+#[test]
+fn another_workspaces_sign_in_completes_nothing() {
+    let host = installed(limits(), Value::Null).file(
+        "/u/.codex/auth.json",
+        &json!({"tokens": {"account_id": "elsewhere", "id_token": id_token("b@example.com")}})
+            .to_string(),
+    );
+    let account = read(&host).unwrap().account.unwrap();
+    assert_ne!(account["label"], "b@example.com");
+}
+
+#[test]
+fn official_quota_reading_asks_the_app_server_but_not_pi() {
+    let mut host = pi_signed_in(installed(limits(), json!({"email": "a@example.com"})));
+    host.quota_levels
+        .insert("codex".into(), crate::account::QuotaReading::Official);
+    let reading = read(&host).unwrap();
+    assert!(!host.started.borrow().is_empty(), "the app-server answered");
+    assert!(host.asked.borrow().is_empty(), "Pi's sign-in is not sent");
+    assert!(reading
+        .quotas
+        .iter()
+        .all(|row| row["consumerRoutes"].is_null()));
+}
+
+#[test]
+fn pi_off_reads_no_pi_sign_in_even_when_codex_reads_everything() {
+    let mut host = pi_signed_in(installed(limits(), json!({"email": "a@example.com"})));
+    host.quota_levels
+        .insert("pi".into(), crate::account::QuotaReading::Off);
+    let reading = read(&host).unwrap();
+    assert!(
+        !host
+            .read
+            .borrow()
+            .iter()
+            .any(|path| path.ends_with("auth.json") && path.starts_with("/u/.pi")),
+        "Pi's auth.json is not read"
+    );
+    assert!(host.asked.borrow().is_empty(), "nothing is sent for Pi");
+    assert!(reading
+        .quotas
+        .iter()
+        .all(|row| row["consumerRoutes"].is_null()));
+    // Codex's own app still answers.
+    assert!(!host.started.borrow().is_empty() && !reading.quotas.is_empty());
+}
+
+#[test]
+fn pi_and_codex_in_full_read_pis_sign_in() {
+    let host = pi_signed_in(installed(limits(), json!({"email": "a@example.com"})));
+    let _ = read(&host);
+    assert!(host
+        .read
+        .borrow()
+        .iter()
+        .any(|path| path.starts_with("/u/.pi") && path.ends_with("auth.json")));
+    assert_eq!(host.asked.borrow().len(), 1, "Pi's sign-in is asked");
 }

@@ -4,10 +4,11 @@ import type { Snapshot } from "@agent-hud/protocol";
 import { BotMark } from "@agent-hud/hud/BotMark";
 import { HUDGlow } from "@agent-hud/hud/HUDGlow";
 import {
+  configuredVendors,
   defaultHUDConfig,
   meterLabel,
+  simpleNumberColor,
   statusColor,
-  vendorsFromSnapshot,
   type HUDConfig,
 } from "@agent-hud/hud/model";
 import { islandPath, stripMetrics } from "@agent-hud/hud/geometry";
@@ -21,7 +22,8 @@ import {
 const originalWallpaper = settingsWallpaper;
 
 /** The resting HUD on a strip of wallpaper, drawn from the screen's settings
- * and the agents in the snapshot. Every mode sits at the top edge of the same
+ * and the agents in the snapshot it shows, as the HUD itself picks and orders
+ * them (`configuredVendors`). Every mode sits at the top edge of the same
  * box, shrunk to fit when it is wider than the preview; it never opens a
  * panel, and draws nothing while the Settings window is inactive. */
 export function SmallHUDPreview({
@@ -34,7 +36,7 @@ export function SmallHUDPreview({
   active: boolean;
 }) {
   const sample = { ...defaultHUDConfig, ...config, edge: "top" as const };
-  const vendors = vendorsFromSnapshot(snapshot, sample.mode);
+  const vendors = configuredVendors(snapshot, sample);
   const hasActiveVendor = vendors.some(
     (vendor) => vendor.working > 0 || vendor.waiting > 0,
   );
@@ -227,7 +229,11 @@ export function SmallHUDPreview({
                         <span
                           style={{
                             fontSize: metrics.font,
-                            color: statusColor(vendor.level),
+                            color: simpleNumberColor(
+                              sample,
+                              light,
+                              statusColor(vendor.level),
+                            ),
                             fontVariantNumeric: "tabular-nums",
                           }}
                         >

@@ -225,7 +225,8 @@ export default function HUDPicture() {
         >
           {target === "hud" ? (
             <HUDScene
-              config={config}
+              // A picture shows the dock as it is when out, never folded.
+              config={{ ...config, autoHide: false }}
               snapshot={{
                 ...filtered,
                 settings: { ...filtered.settings, animations: false },
@@ -234,7 +235,14 @@ export default function HUDPicture() {
             />
           ) : (
             <>
-              <div style={{ position: "relative", padding: 20 }}>
+              <div
+                style={{
+                  position: "relative",
+                  // As on screen: cards keep less room around them.
+                  padding:
+                    config.panelLayout.style?.separators !== false ? 10 : 20,
+                }}
+              >
                 <HUDGroundProvider look={config}>
                   <SourceHoverPanel
                     config={config}

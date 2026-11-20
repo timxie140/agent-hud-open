@@ -1,10 +1,13 @@
 //! Darwin process inspection: proc_pidinfo, proc_pidpath and KERN_PROCARGS2.
 //! Only processes of the current user are read.
 use super::super::ProcessAncestor;
+use arguments::{arguments, parse_procargs2};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
+
+mod arguments;
 
 /// The hook's parent processes, nearest first, up to 16 or the first one that
 /// belongs to another user.
@@ -25,11 +28,46 @@ pub(crate) fn parent_processes() -> Vec<ProcessAncestor> {
         };
         let bundle = bundle(&executable);
         result.push(ProcessAncestor {
+            pid: u32::try_from(pid).ok(),
             executable,
             arguments,
             bundle,
         });
         pid = info.pbi_ppid as i32;
+    }
+    result
+}
+
+/// The processes above `pid` that belong to the same application bundle as
+/// it, nearest first: for a desktop app's helper, the app's own processes
+/// up to its main one. Empty for a process outside a bundle.
+pub(crate) fn app_ancestors(pid: u32) -> Vec<u32> {
+    let Ok(start) = i32::try_from(pid) else {
+        return Vec::new();
+    };
+    let Some(app) = executable_path(start).and_then(|path| super::super::outer_bundle(&path))
+    else {
+        return Vec::new();
+    };
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    let mut current = start;
+    while result.len() < 16 && seen.insert(current) {
+        let Some(info) = bsd_info(current) else {
+            break;
+        };
+        let parent = info.pbi_ppid as i32;
+        if parent <= 1 {
+            break;
+        }
+        let Some(path) = executable_path(parent) else {
+            break;
+        };
+        if super::super::outer_bundle(&path).as_ref() != Some(&app) {
+            break;
+        }
+        result.push(parent as u32);
+        current = parent;
     }
     result
 }
@@ -123,89 +161,6 @@ fn executable_path(pid: i32) -> Option<PathBuf> {
     ))
 }
 
-/// The raw KERN_PROCARGS2 record, at most 1 MiB.
-fn arguments(pid: i32) -> Option<Vec<u8>> {
-    unsafe {
-        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
-        let mut size = 0;
-        if libc::sysctl(
-            mib.as_mut_ptr(),
-            3,
-            std::ptr::null_mut(),
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        ) != 0
-            || !(5..=1024 * 1024).contains(&size)
-        {
-            return None;
-        }
-        let mut data = vec![0u8; size];
-        if libc::sysctl(
-            mib.as_mut_ptr(),
-            3,
-            data.as_mut_ptr().cast(),
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        ) != 0
-        {
-            return None;
-        }
-        data.truncate(size);
-        Some(data)
-    }
-}
-
-/// KERN_PROCARGS2: argc, the executable path, padding, argv, then environ.
-fn parse_procargs2(
-    data: &[u8],
-    wanted_env: &[&str],
-) -> Option<(Vec<String>, HashMap<String, String>)> {
-    let count = i32::from_ne_bytes(data.get(..4)?.try_into().ok()?);
-    if !(1..=4096).contains(&count) {
-        return None;
-    }
-    let mut index = 4 + data[4..].iter().position(|b| *b == 0)?;
-    while data.get(index) == Some(&0) {
-        index += 1;
-    }
-    let mut args = Vec::with_capacity(count as usize);
-    for _ in 0..count {
-        let length = data.get(index..)?.iter().position(|b| *b == 0)?;
-        args.push(String::from_utf8_lossy(&data[index..index + length]).into_owned());
-        index += length + 1;
-    }
-    let mut env = HashMap::new();
-    while index < data.len() {
-        while data.get(index) == Some(&0) {
-            index += 1;
-        }
-        if index >= data.len() {
-            break;
-        }
-        let end = data
-            .get(index..)?
-            .iter()
-            .position(|b| *b == 0)
-            .map(|len| index + len)
-            .unwrap_or(data.len());
-        let entry = &data[index..end];
-        if let Some(eq) = entry.iter().position(|b| *b == b'=') {
-            if let Ok(key) = std::str::from_utf8(&entry[..eq]) {
-                if wanted_env.contains(&key) {
-                    env.insert(
-                        key.to_owned(),
-                        String::from_utf8_lossy(&entry[eq + 1..]).into_owned(),
-                    );
-                }
-            }
-        }
-        index = end + 1;
-    }
-    Some((args, env))
-}
-
 /// The bundle identifier of an executable inside `X.app/Contents/MacOS/`.
 fn bundle(executable: &Path) -> Option<String> {
     let directory = executable.parent()?;
@@ -231,6 +186,61 @@ fn bundle(executable: &Path) -> Option<String> {
 /// Claude Code's process registry: signal 0, and the start proc_pidinfo reads.
 pub(crate) fn process_runs(pid: i32, started: Option<i64>) -> bool {
     super::super::unix::pid_runs(pid, started, start_of)
+}
+
+/// When the process on `pid` started, in Unix seconds, for a process of
+/// this user.
+pub(crate) fn process_start(pid: i32) -> Option<i64> {
+    start_of(pid)
+}
+
+/// Whether the stdin and stdout of the process on `pid` are terminals, as
+/// that process's own `isatty` would answer: both are open on a `/dev/tty…`
+/// character device. False for a process of another user.
+pub(crate) fn terminal_io(pid: i32) -> bool {
+    [0, 1].into_iter().all(|fd| on_terminal(pid, fd))
+}
+
+/// `struct proc_fileinfo` and `struct vnode_fdinfowithpath` of
+/// `<sys/proc_info.h>`, which the libc crate leaves out.
+#[repr(C)]
+struct FileInfo {
+    open_flags: u32,
+    status: u32,
+    offset: libc::off_t,
+    kind: i32,
+    guard_flags: u32,
+}
+#[repr(C)]
+struct VnodeFdInfoWithPath {
+    file: FileInfo,
+    vnode: libc::vnode_info_path,
+}
+const PROC_PIDFDVNODEPATHINFO: libc::c_int = 2;
+
+fn on_terminal(pid: i32, fd: i32) -> bool {
+    // SAFETY: proc_pidfdinfo fills at most `size` bytes of the zeroed
+    // struct, and the path it writes is NUL-terminated within it.
+    unsafe {
+        let mut info: VnodeFdInfoWithPath = std::mem::zeroed();
+        let size = std::mem::size_of_val(&info) as i32;
+        if libc::proc_pidfdinfo(
+            pid,
+            fd,
+            PROC_PIDFDVNODEPATHINFO,
+            (&mut info as *mut VnodeFdInfoWithPath).cast(),
+            size,
+        ) != size
+        {
+            return false;
+        }
+        if info.vnode.vip_vi.vi_stat.vst_mode & libc::S_IFMT != libc::S_IFCHR {
+            return false;
+        }
+        std::ffi::CStr::from_ptr(info.vnode.vip_path.as_ptr().cast())
+            .to_bytes()
+            .starts_with(b"/dev/tty")
+    }
 }
 
 /// When a process of this user started, in Unix seconds.
@@ -268,23 +278,49 @@ mod tests {
     }
 
     #[test]
-    fn procargs_environment_keeps_only_named_variables() {
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&2i32.to_ne_bytes());
-        buf.extend_from_slice(b"/usr/local/bin/codex\0\0");
-        buf.extend_from_slice(b"codex\0--full-auto\0");
-        buf.extend_from_slice(b"TERM_PROGRAM=iTerm.app\0ITERM_SESSION_ID=w0t0p0:ABC\0IGNORED=1\0");
-        let (args, env) =
-            parse_procargs2(&buf, &["TERM_PROGRAM", "ITERM_SESSION_ID", "TMUX"]).unwrap();
-        assert_eq!(args, vec!["codex", "--full-auto"]);
-        assert_eq!(
-            env.get("TERM_PROGRAM").map(String::as_str),
-            Some("iTerm.app")
-        );
-        assert_eq!(
-            env.get("ITERM_SESSION_ID").map(String::as_str),
-            Some("w0t0p0:ABC")
-        );
-        assert!(!env.contains_key("IGNORED"));
+    fn a_process_reads_a_terminal_only_when_its_stdin_and_stdout_are_one() {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        use std::process::{Command, Stdio};
+        let (mut leader, mut follower) = (0, 0);
+        // SAFETY: openpty writes the two descriptors it opens.
+        let opened = unsafe {
+            libc::openpty(
+                &mut leader,
+                &mut follower,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(opened, 0);
+        // SAFETY: both are open descriptors this test alone owns.
+        let (leader, follower) =
+            unsafe { (OwnedFd::from_raw_fd(leader), OwnedFd::from_raw_fd(follower)) };
+        let sleep = |stdin: Stdio, stdout: Stdio| {
+            Command::new("/bin/sleep")
+                .arg("30")
+                .stdin(stdin)
+                .stdout(stdout)
+                .spawn()
+                .unwrap()
+        };
+        let mut children = vec![
+            sleep(
+                follower.try_clone().unwrap().into(),
+                follower.try_clone().unwrap().into(),
+            ),
+            sleep(Stdio::null(), follower.try_clone().unwrap().into()),
+            sleep(Stdio::piped(), Stdio::piped()),
+        ];
+        let answers = children
+            .iter()
+            .map(|child| terminal_io(child.id() as i32))
+            .collect::<Vec<_>>();
+        assert_eq!(answers, [true, false, false]);
+        for child in &mut children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        drop((leader, follower));
     }
 }

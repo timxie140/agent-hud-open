@@ -1,12 +1,9 @@
-//! Laying hook evidence over the sessions the logs show: their state, their
-//! activity time, and sessions only hooks have seen.
-use super::{asked, date, observation_state, valid, HookEvidence, Key, COMPACTION, DAY};
+//! Laying hook evidence over the sessions the logs show: their state and
+//! their activity time.
+use super::{asked, date, observation_state, valid, HookEvidence, COMPACTION, DAY};
 use crate::iso;
-use crate::naming::session_title::{self, TitleEvidence};
-use crate::naming::surfaces;
 use agent_hud_agents::HookEvent;
 use serde_json::{json, Value};
-use std::collections::HashSet;
 
 fn facts(session: &mut Value) -> &mut Value {
     if !session["liveFacts"].is_object() {
@@ -171,13 +168,17 @@ impl HookEvidence {
                     moved.unwrap_or_else(|| origin.data["navigationTarget"].clone());
             }
         }
-        let last_event =
-            date(&session["liveFacts"]["lastEventAt"]).or_else(|| date(&session["updatedAt"]));
-        if let Some(observed) = entry
-            .observation
-            .as_ref()
-            .filter(|e| valid(e, now, 30 * DAY) && last_event.is_none_or(|at| e.at_ms >= at))
-        {
+        let log_event = date(&session["liveFacts"]["lastEventAt"]);
+        let last_event = log_event.or_else(|| date(&session["updatedAt"]));
+        if let Some(observed) = entry.observation.as_ref().filter(|e| {
+            valid(e, now, 30 * DAY)
+                && (last_event.is_none_or(|at| e.at_ms >= at)
+                    || (log_event.is_none()
+                        && entry
+                            .completion
+                            .as_ref()
+                            .is_some_and(|c| valid(c, now, 30 * DAY) && c.at_ms >= e.at_ms)))
+        }) {
             let held = asked(entry, now).map(|_| "waiting");
             if let Some(state) = held.or_else(|| observation_state(observed, now)) {
                 session["state"] = json!(state);
@@ -194,6 +195,16 @@ impl HookEvidence {
                 } else {
                     Value::Null
                 };
+                if !observed.data["prompt"].is_null() {
+                    facts["prompt"] = observed.data["prompt"].clone();
+                }
+                if !observed.data["message"].is_null() {
+                    facts["message"] = observed.data["message"].clone();
+                }
+                // Which of Agent HUD's messages a stop hook handed over.
+                if !observed.data["delivered"].is_null() {
+                    facts["delivered"] = observed.data["delivered"].clone();
+                }
                 // An observation without a destination keeps the one the log gave.
                 if !observed.data["navigationTarget"].is_null() {
                     session["navigationTarget"] = observed.data["navigationTarget"].clone();
@@ -203,7 +214,9 @@ impl HookEvidence {
 
         if let Some(completion) = entry.completion.as_ref().filter(|e| {
             valid(e, now, 30 * DAY)
-                && last_event.is_none_or(|at| e.at_ms > at)
+                && (last_event.is_none_or(|at| e.at_ms > at)
+                    || (log_event.is_none() && last_event.is_none_or(|at| e.at_ms + 60_000 >= at))
+                    || session["evidence"] == "completion-hook")
                 && date(&session["liveFacts"]["turnStartedAt"]).is_none_or(|at| e.at_ms >= at)
         }) {
             session["state"] = json!("idle");
@@ -214,10 +227,25 @@ impl HookEvidence {
             facts["endedAt"] = iso(completion.at_ms);
             facts["activity"] = Value::Null;
             facts["requests"] = json!([]);
-            if facts["message"].is_null() && !completion.data["message"].is_null() {
+            if !completion.data["message"].is_null() {
                 facts["message"] = completion.data["message"].clone();
             }
         }
+        // When a hook of this session last reported: proof that its client
+        // runs Agent HUD's hooks, which is what a queued message waits for.
+        let hook_at = [&entry.observation, &entry.completion, &entry.attention]
+            .into_iter()
+            .flatten()
+            .filter(|e| valid(e, now, 30 * DAY))
+            .map(|e| e.at_ms)
+            .max();
+        // The processes its newest hook ran from (`platform::hooks::entry`).
+        let hook_pids = [&entry.observation, &entry.completion]
+            .into_iter()
+            .flatten()
+            .filter(|e| valid(e, now, DAY) && e.data["pids"].is_array())
+            .max_by_key(|e| e.at_ms)
+            .map(|e| e.data["pids"].clone());
         let own_line = last_log_line_ms.or(last_event);
         if let Some(attention) = entry
             .attention
@@ -244,57 +272,13 @@ impl HookEvidence {
             }
             facts["activity"]["compactingSince"] = iso(compaction.at_ms);
         }
-    }
-    /// Explicitly completed clients with no migrated transcript reader can still
-    /// present their completion. tokens=0 is a required wire sentinel, labelled
-    /// unavailable below; it is never entered into provider totals or the ledger.
-    pub(crate) fn extra_sessions(
-        &self,
-        now: i64,
-        days: i64,
-        existing: &HashSet<Key>,
-    ) -> Vec<Value> {
-        let mut result = vec![];
-        for (source, sessions) in &self.sessions {
-            for (id, evidence) in sessions {
-                if existing.contains(&(source.clone(), id.clone())) {
-                    continue;
-                }
-                let Some(event) = evidence
-                    .observation
-                    .as_ref()
-                    .or(evidence.completion.as_ref())
-                    .filter(|e| valid(e, now, days.clamp(0, 30) * DAY))
-                else {
-                    continue;
-                };
-                let cwd = event.data["workspace"].as_str();
-                let mut naming = TitleEvidence::default();
-                naming.name(0, event.data["title"].as_str());
-                let label =
-                    session_title::display(&event.source, &event.session_id, &naming, cwd, None);
-                let at = iso(event.at_ms);
-                let mut session = json!({"id":event.session_id,"source":event.source,"title":label,"model":event.data["model"].as_str().unwrap_or("Unknown"),"cwd":cwd,"updatedAt":at,"lastMessageAt":at,"state":"idle","tokens":0,"cost":null,"contextPercent":null,"logPath":null,"parentId":null,"usageStatus":"unavailable","evidence":"completion-hook","liveFacts":{"turnId":event.data["turnId"],"turnStartedAt":null,"outcome":"completed","endedAt":at,"limitedUntil":null,"observedAt":at,"lastEventAt":at,"activity":null,"requests":[]}});
-                self.overlay(&mut session, now, Some(event.at_ms), None);
-                // No log names its prompts: the reports do, else the client's
-                // one interface.
-                let mut origins =
-                    surfaces::from_reports(&self.reports(&event.source, &event.session_id));
-                let only = surfaces::from_log(&event.source, None, None);
-                origins.latest = origins.latest.or_else(|| origins.init.clone());
-                origins.init.get_or_insert_with(|| only.clone());
-                origins.latest.get_or_insert(only);
-                session["origins"] = origins.json();
-                result.push(session);
-            }
+        // What agent messages need of the hooks, kept beside the live facts
+        // because a client's live status can be turned off for display
+        // (`hud::presentation`), which drops those and shows it idle: when a
+        // hook last reported, the processes it ran from, and the state the
+        // hooks left the session in.
+        if let Some(at) = hook_at {
+            session["hooks"] = json!({"at":iso(at),"pids":hook_pids.unwrap_or(Value::Null),"state":session["state"]});
         }
-        result.sort_unstable_by(|a, b| {
-            b["updatedAt"]
-                .as_str()
-                .cmp(&a["updatedAt"].as_str())
-                .then_with(|| a["source"].as_str().cmp(&b["source"].as_str()))
-                .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
-        });
-        result
     }
 }

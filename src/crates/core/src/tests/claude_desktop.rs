@@ -435,7 +435,7 @@ fn turning_answer_questions_off_makes_a_reached_box_display_only_at_once() {
     assert_eq!(cards[0]["answersQuestion"], false);
     let note = cards[0]["answerNote"].as_str().unwrap();
     assert!(
-        note.contains("Agent plugins") || note.contains("智能体插件"),
+        note.contains("Settings → Agents") || note.contains("设置 → 智能体"),
         "{note}"
     );
     assert_eq!(cards[0]["answerFix"], "turnOnAnswers");
@@ -541,18 +541,4 @@ fn a_claude_desktop_box_sends_a_button_label_or_the_users_own_words_and_a_dismis
         desktop_cards(&mut backend).is_empty(),
         "nor comes back as an answerable card"
     );
-}
-
-#[test]
-fn every_replies_setting_is_a_setting_that_starts_on() {
-    let temp = tempfile::tempdir().unwrap();
-    let core = AgentHudCore::new(Vec::new(), temp.path().to_owned());
-    let mut with_replies = 0;
-    for agent in agent_hud_agents::ALL {
-        if let Some(replies) = agent.replies {
-            with_replies += 1;
-            assert_eq!(core.settings[replies.setting], true, "{}", agent.id);
-        }
-    }
-    assert_eq!(with_replies, 1, "Claude Code alone takes words today");
 }

@@ -28,7 +28,7 @@ fn strip_width(
             let size = screen.number("simpleSize").clamp(20.0, 60.0);
             let style = screen.simple_style();
             let rings = matches!(style, "rings" | "segments");
-            let numbers = style == "numbers" || screen.flag("showsNumbers");
+            let numbers = screen.shows_numbers();
             let logo = (size * if rings { 0.55 } else { 0.68 }).round();
             let mark = if rings { size } else { logo };
             // geometry.ts `bar`: bars beside the logo, 1.09 marks long.
@@ -94,15 +94,18 @@ fn plan(
     let layout = screen.layout();
     let labels: Vec<String> = snapshot
         .map(|snapshot| {
-            vendors::configured(snapshot, screen.mode_name(), layout, now_ms)
-                .iter()
-                .map(|vendor| {
-                    vendors::meter_label(
-                        vendor,
-                        snapshot["settings"]["quotaDisplay"] == "remaining",
-                    )
-                })
-                .collect()
+            vendors::configured(
+                snapshot,
+                screen.mode_name(),
+                layout,
+                now_ms,
+                screen.shortest_window_first(),
+            )
+            .iter()
+            .map(|vendor| {
+                vendors::meter_label(vendor, snapshot["settings"]["quotaDisplay"] == "remaining")
+            })
+            .collect()
         })
         .unwrap_or_default();
     let strip = strip_width(
@@ -201,8 +204,21 @@ impl Planner {
         now_ms: i64,
     ) {
         let visible = snapshot.is_none_or(|snapshot| snapshot["settings"]["hudVisible"] != false);
+        // Read only for a screen that asks: it is the system's own list.
+        let mut full_screen = None;
         for display in &self.displays {
-            let config = plan(display, view, snapshot, visible, now_ms);
+            // A screen's own Hide switch: it has no HUD, whatever the others
+            // show. With Hide in full screen it has none while an app or video
+            // is full screen on it, and its HUD comes back where it was after
+            // (Open #117).
+            let monitor = &display.info;
+            let screen = Screen::new(view, &monitor.screen_id, monitor.notch.is_some());
+            let hidden = screen.flag("hidden")
+                || (screen.flag("hidesInFullScreen")
+                    && full_screen
+                        .get_or_insert_with(crate::screens::full_screen)
+                        .holds(&monitor.screen_id));
+            let config = plan(display, view, snapshot, visible && !hidden, now_ms);
             let id = display.info.screen_id.clone();
             let signature = (
                 config.clone(),

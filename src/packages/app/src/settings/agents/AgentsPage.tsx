@@ -1,17 +1,31 @@
-/* Settings → Agents: the list of agents on the left, the chosen one's
- * settings on the right. */
-import { useEffect, useRef, useState } from "react";
-import { invoke, isTauri } from "@tauri-apps/api/core";
-import { DotDetail, type DotStatus } from "./DotDetail";
+/* Settings → Agents: what Agent HUD does, one switch each for every agent,
+ * then the agents, each with the features it uses; at the bottom, HUD tools
+ * for any other agent and the details behind hooks and tools. An agent opens
+ * its own page, where any feature can be turned off for it alone and its
+ * plugin and HUD tools are added; a vendor's name opens the vendor's page,
+ * where its agents' accounts are set. */
+import { useLayoutEffect, useRef, useState } from "react";
+import { Braces } from "lucide-react";
 import type {
+  ClientRow,
   NativeMethod,
   PanelLayout,
   Snapshot,
   SourcePreferences,
 } from "@agent-hud/protocol";
-import { useText } from "../SettingsPrimitives";
+import { useT } from "@agent-hud/ui/format-context";
+import { Page } from "../SettingsPrimitives";
+import type { AgentPluginItem } from "../agent-plugins/types";
+import { OtherAgentsCard } from "../agent-plugins/OtherAgentsCard";
+import { DetailsSection } from "../agent-plugins/DetailsSection";
+import { nativeClients } from "../agent-plugins/services";
+import { ToolsSection } from "../agent-plugins/ToolsSection";
+import { useHudTools, useMcpClients } from "../agent-plugins/use-status";
+import { DotSettings } from "./DotSettings";
 import { AgentList } from "./AgentList";
 import { AgentDetail } from "./AgentDetail";
+import { FeaturesSection } from "./FeaturesSection";
+import { GroupDetail } from "./GroupDetail";
 import "./agents.css";
 
 export interface AgentsPageProps {
@@ -26,7 +40,16 @@ export interface AgentsPageProps {
   onLayout: (layout: PanelLayout) => Promise<unknown>;
   preferences: Record<string, SourcePreferences>;
   onPreferences: (source: string, patch: SourcePreferences) => Promise<unknown>;
+  /** A product build's own agent tools, shown with Agent HUD's, and its
+   * rows for a client, on the client's page. */
+  items?: AgentPluginItem[];
+  request: (method: string, params?: unknown) => Promise<unknown>;
+  /** The client whose page opens first (a link to it); else the list. */
+  open?: string | null;
 }
+
+type View =
+  { kind: "list" } | { kind: "dot" } | { kind: "client" | "group"; id: string };
 
 export default function AgentsPage({
   snapshot,
@@ -36,121 +59,132 @@ export default function AgentsPage({
   onLayout,
   preferences,
   onPreferences,
+  items = [],
+  request,
+  open,
 }: AgentsPageProps) {
-  const t = useText(snapshot);
-  const [selectedID, setSelected] = useState<string>();
+  const t = useT();
+  const [view, setView] = useState<View>(
+    open ? { kind: "client", id: open } : { kind: "list" },
+  );
   const page = useRef<HTMLDivElement>(null);
-  const [dot, setDot] = useState<DotStatus | null>(null);
-  const readDot = async () => {
-    const status = isTauri()
-      ? await invoke<DotStatus>("native_dot", { action: "status" })
-      : {
-          enabled: false,
-          running: false,
-          ready: false,
-          subscribed: false,
-          hasRuntimeApiKey: false,
-          notice: t(
-            "Dot's native runtime is unavailable in this preview.",
-            "当前预览无法使用 Dot 本机运行端。",
-          ),
-        };
-    setDot(status);
+  const tools = useHudTools(snapshot, action);
+  // Which clients have HUD tools: the list's tags and each agent's row.
+  const mcp = useMcpClients(nativeClients, active ?? true, t);
+  // The order the runtime lists them in, so the list never jumps.
+  const clients: ClientRow[] = snapshot.clients?.length
+    ? snapshot.clients
+    : snapshot.providers.map((provider) => ({
+        id: provider.id,
+        agent: provider.id,
+        name: provider.name,
+        group: provider.id,
+        groupName: "",
+        detected: provider.detected,
+        enabled: provider.enabled,
+      }));
+  const members = (group: string) =>
+    clients.filter((row) => group && row.group === group);
+  // Where the list was scrolled to when an agent or vendor was opened, so
+  // coming back lands there; null until a page is opened from it.
+  const listTop = useRef<number | null>(null);
+  const scroller = () => page.current?.closest(".settings-scroll");
+  const go = (next: View) => {
+    if (view.kind === "list") listTop.current = scroller()?.scrollTop ?? 0;
+    setView(next);
   };
-  useEffect(() => {
-    if (active === false) return;
-    let disposed = false;
-    let failed = false;
-    const refresh = () => {
-      if (!disposed && !failed)
-        void readDot().catch((error) => {
-          failed = true;
-          if (!disposed)
-            setDot({
-              enabled: false,
-              running: false,
-              ready: false,
-              subscribed: false,
-              hasRuntimeApiKey: false,
-              notice: String(error),
-            });
-        });
-    };
-    refresh();
-    const timer = setInterval(refresh, 10000);
-    return () => {
-      disposed = true;
-      clearInterval(timer);
-    };
-  }, [active, dot?.enabled ?? false]);
-  // Found agents first; otherwise the order the runtime lists them in, so
-  // the list never jumps when the panel order changes.
-  const providers = snapshot.providers
-    .filter((p) => p.id !== "dot")
-    .sort((a, b) => Number(b.detected) - Number(a.detected));
-  providers.push({
-    id: "dot",
-    name: "Dot",
-    detected: true,
-    enabled: dot?.enabled ?? false,
-    notice: null,
-    sessions: dot?.subscribed ? 1 : 0,
-  });
-  const source =
-    providers.find((provider) => provider.id === selectedID) ?? providers[0];
-  const select = (id: string) => {
-    setSelected(id);
-    // Show the new agent from its top, wherever the last one was scrolled.
-    page.current?.closest(".settings-scroll")?.scrollTo({ top: 0 });
-  };
+  // An agent's or vendor's page starts at its top; the list, where it was
+  // left. Set once the page is drawn, so the list is tall enough again.
+  useLayoutEffect(() => {
+    if (listTop.current === null) return;
+    scroller()?.scrollTo({ top: view.kind === "list" ? listTop.current : 0 });
+  }, [view]);
+  const back = () => go({ kind: "list" });
+  const client =
+    view.kind === "client"
+      ? clients.find((row) => row.id === view.id)
+      : undefined;
+  const source = snapshot.providers.find(
+    (provider) => provider.id === client?.agent,
+  );
+  const group = view.kind === "group" ? members(view.id) : [];
 
   return (
     <div className="agents-page" ref={page}>
-      <AgentList
-        t={t}
-        providers={providers}
-        selected={source?.id}
-        select={select}
-      />
-      <div className="agents-detail">
-        {source?.id === "dot" ? (
-          dot ? (
-            <DotDetail
-              t={t}
-              status={dot}
-              platform={snapshot.connection.system?.platform}
-              refresh={readDot}
-              save={async (arguments_) => {
-                const next = await invoke<DotStatus>("native_dot", {
-                  action: "configure",
-                  arguments: arguments_,
-                });
-                setDot(next);
-              }}
-            />
-          ) : (
-            <p role="status">
-              {t("Reading Dot settings…", "正在读取 Dot 设置…")}
-            </p>
-          )
-        ) : (
-          source && (
-            // Keyed by agent, so a draft or an error never carries over.
-            <AgentDetail
-              key={source.id}
-              t={t}
-              snapshot={snapshot}
-              source={source}
-              active={active}
-              action={action}
-              layout={layout}
-              onLayout={onLayout}
-              preferences={preferences}
-              onPreferences={onPreferences}
-            />
-          )
-        )}
-      </div>
+      {view.kind === "dot" ? (
+        <DotSettings snapshot={snapshot} active={active} back={back} />
+      ) : client && source ? (
+        // Keyed by client, so a draft or an error never carries over.
+        <AgentDetail
+          key={client.id}
+          t={t}
+          snapshot={snapshot}
+          client={client}
+          source={source}
+          active={active}
+          action={action}
+          layout={layout}
+          onLayout={onLayout}
+          preferences={preferences}
+          onPreferences={onPreferences}
+          back={back}
+          openGroup={
+            members(client.group).length > 1 && client.groupName
+              ? () => go({ kind: "group", id: client.group })
+              : undefined
+          }
+          clients={mcp}
+          tools={tools}
+          items={items.filter((item) => item.place !== "tools")}
+          request={request}
+        />
+      ) : group.length ? (
+        <GroupDetail
+          key={`group:${group[0].group}`}
+          t={t}
+          snapshot={snapshot}
+          clients={group}
+          active={active}
+          action={action}
+          layout={layout}
+          onLayout={onLayout}
+          back={back}
+        />
+      ) : (
+        <Page>
+          <FeaturesSection t={t} snapshot={snapshot} action={action} />
+          <ToolsSection
+            tools={tools}
+            groups={items.filter((item) => item.place === "tools")}
+            snapshot={snapshot}
+            action={action}
+            request={request}
+            active={active ?? true}
+            t={t}
+          />
+          <AgentList
+            t={t}
+            snapshot={snapshot}
+            clients={clients}
+            preferences={preferences}
+            selectDot={() => go({ kind: "dot" })}
+            select={(id) => go({ kind: "client", id })}
+            selectGroup={(id) => go({ kind: "group", id })}
+            added={mcp.status}
+          />
+          <OtherAgentsCard
+            json={mcp.status?.json}
+            icon={<Braces size={16} strokeWidth={1.8} />}
+            t={t}
+          />
+          <DetailsSection
+            snapshot={snapshot}
+            clients={mcp.status}
+            tools={tools}
+            t={t}
+          />
+        </Page>
+      )}
     </div>
   );
 }

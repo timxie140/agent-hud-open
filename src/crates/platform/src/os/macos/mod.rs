@@ -1,6 +1,6 @@
 pub(crate) use super::unix::{
-    environment_value, hook_configuration, hook_text, is_shell, owned_by_user, owner_only,
-    private_append, private_directory, private_file, read_stdin,
+    engine_command, environment_value, hook_configuration, hook_text, is_shell, owned_by_user,
+    owner_only, private_append, private_directory, private_file, read_stdin, user_transcript,
 };
 use super::{joined_path, path_entries, Environment, ProcessInfo};
 use std::{
@@ -16,8 +16,10 @@ mod secrets;
 pub(crate) use app_cookies::{app_cookie, unseal_safe_storage};
 pub(crate) use apps::{activate_app, app_running, launch_app, ACTIVATES_APPS};
 pub use launch_services::registered_applications;
-pub(crate) use launch_services::{registered_bundle, registered_url};
-pub(crate) use process::{codex_cli_on_port, parent_processes, process_runs};
+pub(crate) use launch_services::{default_browser, registered_bundle, registered_url};
+pub(crate) use process::{
+    app_ancestors, codex_cli_on_port, parent_processes, process_runs, process_start, terminal_io,
+};
 pub(crate) use secrets::stored_secret;
 /// Darwin exposes another process's environment through KERN_PROCARGS2.
 pub(crate) const READS_PROCESS_ENVIRONMENT: bool = true;
@@ -70,6 +72,10 @@ pub(crate) fn executable_dirs(home: &Path, env: &Environment) -> Vec<PathBuf> {
         home.join(".local/bin"),
         home.join(".bun/bin"),
         home.join(".npm-global/bin"),
+        home.join(".kimi-code/bin"),
+        home.join(".zcode/bin"),
+        home.join(".qodersec/bin"),
+        home.join(".qoder/bin"),
         "/opt/homebrew/bin".into(),
         "/usr/local/bin".into(),
     ]);
@@ -82,8 +88,31 @@ pub(crate) fn engine_executable(path: &Path) -> bool {
     super::unix::executable(path)
 }
 pub(crate) fn configure_command(_command: &mut Command) {}
+pub(crate) fn spawn(command: &mut Command) -> std::io::Result<std::process::Child> {
+    command.spawn()
+}
 pub(crate) fn engine_candidates(home: &Path, env: &Environment, name: &str) -> Vec<PathBuf> {
     let mut paths = Vec::new();
+    // WorkBuddy's key is read only by the WorkBuddy app itself, never by
+    // whatever else on PATH carries the name.
+    if name == "workbuddy-app" {
+        let mut apps: Vec<PathBuf> = [PathBuf::from("/Applications"), home.join("Applications")]
+            .into_iter()
+            .map(|root| root.join("WorkBuddy.app"))
+            .collect();
+        if !apps.iter().any(|app| app.is_dir()) {
+            apps.extend(registered_applications("com.tencent.workbuddy.mac"));
+        }
+        for app in apps {
+            let plist =
+                std::fs::read_to_string(app.join("Contents/Info.plist")).unwrap_or_default();
+            if !plist.contains("com.workbuddy.workbuddy-ai") {
+                paths.push(app.join("Contents/MacOS/Electron"));
+                paths.push(app.join("Contents/MacOS/WorkBuddy"));
+            }
+        }
+        return paths;
+    }
     if name == "codex" {
         let engines = |app: PathBuf| {
             [
@@ -119,6 +148,19 @@ pub(crate) fn engine_candidates(home: &Path, env: &Environment, name: &str) -> V
         ));
     }
     paths.extend(path_entries(env).into_iter().map(|dir| dir.join(name)));
+    if name == "opencode" {
+        // OpenCode's install script's folder, then the copy of the command
+        // line its desktop app carries: `Resources/opencode-cli` in the
+        // Electron app, `MacOS/opencode-cli` in the earlier Tauri one.
+        paths.push(home.join(".opencode/bin/opencode"));
+        for root in [PathBuf::from("/Applications"), home.join("Applications")] {
+            for app in ["OpenCode.app", "OpenCode Beta.app"] {
+                let app = root.join(app).join("Contents");
+                paths.push(app.join("Resources/opencode-cli"));
+                paths.push(app.join("MacOS/opencode-cli"));
+            }
+        }
+    }
     if matches!(name, "agy" | "antigravity") {
         paths.push(home.join(".antigravity/antigravity/bin").join(name));
         let bundled = |app: PathBuf| {

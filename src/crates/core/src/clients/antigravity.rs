@@ -4,12 +4,16 @@ use agent_hud_agents::antigravity::proto as antigravity_proto;
 use agent_hud_agents::transcript::records::{Page, Record};
 use agent_hud_agents::transcript::sql_tables;
 use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::Path;
 
 mod annotations;
+mod marks;
+mod metadata;
 
 use annotations::annotation;
+use marks::Marks;
+use metadata::trajectory_metadata;
 
 const PAGE: i64 = 500;
 
@@ -38,27 +42,6 @@ fn unique_time(
     )
 }
 
-fn trajectory_metadata(client: &Connection) -> antigravity_proto::TrajectoryMetadata {
-    let Ok(tables) = sql_tables(client) else {
-        return Default::default();
-    };
-    if !tables.contains("trajectory_metadata_blob") {
-        return Default::default();
-    }
-    client
-        .query_row(
-            "SELECT data FROM trajectory_metadata_blob LIMIT 1",
-            [],
-            |row| match row.get_ref(0)? {
-                rusqlite::types::ValueRef::Blob(b) if b.len() <= 1024 * 1024 => {
-                    Ok(antigravity_proto::metadata(b).unwrap_or_default())
-                }
-                _ => Ok(Default::default()),
-            },
-        )
-        .unwrap_or_default()
-}
-
 pub(crate) fn read(
     client: &Connection,
     ledger: &Connection,
@@ -69,13 +52,14 @@ pub(crate) fn read(
     let path_text = path.to_string_lossy();
     let stage = cursor["stage"].as_i64().unwrap_or(0);
     let after = cursor["after"].as_i64().unwrap_or(i64::MIN);
+    let mut marks = Marks::of(cursor);
     if cursor.is_null() {
         staging::clear_stale_proto_identity(ledger, &path_text, generation)?;
     }
     if stage == 1 && !sql_tables(client)?.contains("steps") {
         return Ok(Page {
             records: vec![],
-            cursor: Some(json!({"stage":2})),
+            cursor: Some(marks.cursor(2, marks.turns_from)),
             watermark: None,
         });
     }
@@ -131,6 +115,11 @@ pub(crate) fn read(
     while let Some(row) = rows.next()? {
         seen += 1;
         last = row.get(0)?;
+        if stage == 1 {
+            marks.steps_last = marks.steps_last.max(last);
+        } else {
+            marks.turns_last = marks.turns_last.max(last);
+        }
         let blob = row.get_ref(1)?;
         let rusqlite::types::ValueRef::Blob(blob) = blob else {
             continue;
@@ -266,16 +255,19 @@ pub(crate) fn read(
         }
     }
     let cursor = if seen == PAGE {
-        Some(json!({"stage":stage,"after":last}))
-    } else if stage < 2 {
-        Some(json!({"stage":stage+1}))
+        Some(marks.cursor(stage, last))
+    } else if stage == 0 {
+        Some(marks.cursor(1, marks.steps_from))
+    } else if stage == 1 {
+        Some(marks.cursor(2, marks.turns_from))
     } else {
         None
     };
+    let watermark = cursor.is_none().then(|| marks.watermark());
     Ok(Page {
         records,
         cursor,
-        watermark: None,
+        watermark,
     })
 }
 

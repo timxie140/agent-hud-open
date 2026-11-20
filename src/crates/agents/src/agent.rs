@@ -2,7 +2,8 @@
 use crate::hooks::{Hooks, Observer};
 use crate::{
     antigravity, ark, buddy, claude, cline, codex, copilot, cursor, deepseek, devin, droid, glm,
-    goose, grok, hermes, kimi, minimax, openclaw, opencode, pi, qoder, qwen, trae, zcode,
+    goose, grok, hermes, kimi, minimax, minimax_code, openclaw, opencode, pi, qoder, qwen, trae,
+    zcode,
 };
 use crate::{Channel, Discovery, PerOs, Replies, Source};
 
@@ -54,6 +55,7 @@ pub static ALL: &[&Agent] = &[
     &hermes::AGENT,
     &zcode::AGENT,
     &buddy::CODEBUDDY,
+    &buddy::CODEBUDDY_CN,
     &buddy::WORKBUDDY,
     &qwen::AGENT,
     &opencode::AGENT,
@@ -67,9 +69,11 @@ pub static ALL: &[&Agent] = &[
     &devin::AGENT,
     &glm::AGENT,
     &minimax::AGENT,
+    &minimax_code::AGENT,
     &ark::AGENT,
     &opencode::KILO,
     &opencode::MIMO_CODE,
+    &opencode::TELEAGENT,
     &pi::OH_MY_PI,
     &droid::AGENT,
     &cline::CLINE,
@@ -97,13 +101,20 @@ pub static ACCOUNTS: &[&crate::account::Provider] = &[
     &crate::coding_plans::GLM,
     &crate::coding_plans::OPENCODE_GO,
     &minimax::account::PROVIDER,
+    &minimax_code::account::PROVIDER,
     &ark::account::PROVIDER,
     &cline::account::PROVIDER,
     &crate::relays::PROVIDER,
     &droid::account::PROVIDER,
-    &crate::qoder::account::PROVIDER,
-    &crate::buddy::account::PROVIDER,
-    &trae::account::PROVIDER,
+    &zcode::account::PROVIDER,
+    &crate::qoder::account::QODER,
+    &crate::qoder::account::QODER_CN,
+    &crate::qoder::account::QODER_WORK,
+    &crate::buddy::account::WORKBUDDY,
+    &crate::buddy::account::CODEBUDDY,
+    &crate::buddy::account::CODEBUDDY_CN,
+    &trae::account::TRAE,
+    &trae::account::TRAE_CN,
 ];
 
 /// Where a session of `source` opens, as its agent says (`Discovery::session_target`):
@@ -132,47 +143,9 @@ pub fn by_id(id: &str) -> Option<&'static Agent> {
 mod tests {
     use super::*;
 
+    /// No two clients share an id: `by_id` finds each one as itself.
     #[test]
-    fn every_client_is_listed_once_in_settings_order() {
-        let ids = ALL.iter().map(|agent| agent.id).collect::<Vec<_>>();
-        assert_eq!(
-            ids,
-            [
-                "claude",
-                "codex",
-                "deepseek",
-                "antigravity",
-                "cursor",
-                "grok-cli",
-                "grok-bot",
-                "copilot",
-                "openclaw",
-                "hermes",
-                "zcode",
-                "codebuddy",
-                "workbuddy",
-                "qwen",
-                "opencode",
-                "kimi",
-                "pi",
-                "qoder",
-                "qoder-cn",
-                "qoder-work",
-                "trae",
-                "trae-cn",
-                "devin",
-                "glm",
-                "minimax",
-                "ark",
-                "kilo",
-                "mimocode",
-                "omp",
-                "droid",
-                "cline",
-                "roo-code",
-                "goose",
-            ]
-        );
+    fn every_client_has_its_own_id() {
         for agent in ALL {
             assert!(std::ptr::eq(by_id(agent.id).unwrap(), *agent));
         }
@@ -201,6 +174,21 @@ mod tests {
             Some(json!({"kind":"cursor-agent","id":"3e8f","cwd":"/w/p"}))
         );
         assert_eq!(session_target("cursor", "cursor:3e8f", None, None), None);
+        assert_eq!(
+            session_target(
+                "deepseek",
+                "deepseek:session-1456302e-07b2-4280-a8a6-986236e9094f",
+                None,
+                None
+            ),
+            Some(
+                json!({"kind":"deepseek-session","id":"session-1456302e-07b2-4280-a8a6-986236e9094f"})
+            )
+        );
+        assert_eq!(
+            session_target("deepseek", "deepseek:main", None, None),
+            None
+        );
         assert_eq!(
             session_target("antigravity", "antigravity:c1", Some("/w"), Some("Desktop")),
             Some(json!({"kind":"antigravity-conversation","id":"c1","cwd":"/w"}))

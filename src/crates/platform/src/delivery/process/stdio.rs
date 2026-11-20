@@ -61,16 +61,17 @@ impl StdioServer {
         let job = children::Job::new()?;
         let (mut child, executable) =
             children::spawn_codex(executable, discover, environment, |selected| {
-                let mut command = Command::new(selected);
+                let mut command =
+                    crate::os::engine_command(selected, &["app-server", "--listen", "stdio://"])
+                        .map_err(std::io::Error::other)?;
                 command
-                    .args(["app-server", "--listen", "stdio://"])
                     .envs(environment)
                     .env("CODEX_HOME", data)
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::null());
                 crate::os::configure_command(&mut command);
-                command.spawn()
+                crate::os::spawn(&mut command)
             })?;
         if let Err(error) = job.assign(&child) {
             let _ = child.kill();

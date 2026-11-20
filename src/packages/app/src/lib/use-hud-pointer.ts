@@ -13,10 +13,29 @@ const outsidePointer: HUDNativePointer = {
   metaKey: null,
   shiftKey: null,
 };
+/** The pointer on the guide's window beside the HUD is not on the HUD: it
+ * clicks the window's buttons but never opens the panel. */
+function offGuide<T extends HUDNativePointer>(pointer: T): T {
+  const guide = document.querySelector(".hud-guide")?.getBoundingClientRect();
+  const point = pointer.point;
+  if (!pointer.inside || !point || !guide?.width) return pointer;
+  const scene = document.querySelector(".hud-scene")?.getBoundingClientRect();
+  const x = point.x + (scene?.left ?? 0);
+  const y = point.y + (scene?.top ?? 0);
+  const over =
+    x >= guide.left && x <= guide.right && y >= guide.top && y <= guide.bottom;
+  return over ? { ...pointer, inside: false } : pointer;
+}
+/** The HUD's parts the pointer can reach: where the host takes clicks. */
+const REGIONS =
+  ".hud-resting-strip, .hud-rest-zone, .hud-expanded-surface, .hud-grab-surface, .hud-hover-floor, .hud-dock-end, .hud-guide";
+/** A folded dock's strip keeps its place but lets clicks through: only its
+ * zone at the edge takes the pointer then. */
+const folded = (element: Element) =>
+  Boolean(element.closest(".hud-resting-strip[data-folded]"));
 /** Only outer HUD geometry wakes native reports; animated bot descendants never do. */
 function observeHUDContours(report: () => void) {
-  const selector =
-    ".hud-scene, .hud-resting-strip, .hud-expanded-surface, .hud-grab-surface, .hud-hover-floor, .hud-dock-end";
+  const selector = `.hud-scene, ${REGIONS}`;
   let timer: ReturnType<typeof setTimeout> | null = null,
     last = 0;
   const queue = () => {
@@ -36,7 +55,7 @@ function observeHUDContours(report: () => void) {
     for (const element of document.querySelectorAll(selector))
       attributes.observe(element, {
         attributes: true,
-        attributeFilter: ["style", "class"],
+        attributeFilter: ["style", "class", "data-folded"],
       });
   };
   const relevant = (node: Node) =>
@@ -79,7 +98,7 @@ export function useHUDPointer(screenId: string) {
       (event) => {
         if (disposed || event.payload.screenId !== screenId) return;
         pointerRevision.current += 1;
-        setNativePointer(event.payload);
+        setNativePointer(offGuide(event.payload));
       },
     );
     return () => {
@@ -113,7 +132,7 @@ export function useHUDPointer(screenId: string) {
           revision === pointerRevision.current &&
           status.pointer.screenId === screenId
         ) {
-          setNativePointer(status.pointer);
+          setNativePointer(offGuide(status.pointer));
         }
       } catch (error) {
         previous = "";
@@ -127,16 +146,18 @@ export function useHUDPointer(screenId: string) {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         if (disposed) return;
-        const regions = [
-          ...document.querySelectorAll(
-            ".hud-resting-strip, .hud-expanded-surface, .hud-grab-surface, .hud-hover-floor, .hud-dock-end",
-          ),
-        ]
+        // In the canvas's coordinates, as the host's pointer is: the window
+        // may show only the part of the canvas next to the HUD's edge.
+        const scene = document
+          .querySelector(".hud-scene")
+          ?.getBoundingClientRect();
+        const regions = [...document.querySelectorAll(REGIONS)]
+          .filter((element) => !folded(element))
           .map((element) => {
             const rect = element.getBoundingClientRect();
             return {
-              x: rect.x,
-              y: rect.y,
+              x: rect.x - (scene?.left ?? 0),
+              y: rect.y - (scene?.top ?? 0),
               width: rect.width,
               height: rect.height,
             };

@@ -24,6 +24,7 @@ pub(super) use pointer::{global_pointer, left_mouse_down, pointer_keys};
 
 pub(super) const GLOBAL_POINTS: bool = false;
 pub(super) const COORDINATE_SPACE: &str = "monitor-scaled-physical-top-left";
+pub(super) const DOCK_IN_WORK_AREA: bool = false;
 
 /// Whether the compositor offers layer-shell; learned on the GTK thread when
 /// the first HUD is placed.
@@ -70,6 +71,14 @@ pub(super) fn edge_hud_unsupported() -> Option<&'static str> {
     )
 }
 
+/// Not followed yet: a WebKitGTK page whose web process ended stays as it is.
+pub(super) fn watch_page(
+    _window: &tauri::WebviewWindow,
+    _on_event: std::sync::Arc<dyn Fn(super::recovery::PageEvent) + Send + Sync>,
+) -> Result<(), String> {
+    Ok(())
+}
+
 /// Runs `job` with the window's GTK toplevel and WebView on the GTK thread and
 /// waits for it. Tauri runs it in place when already on that thread.
 fn on_gtk<T: Send + 'static>(
@@ -103,11 +112,12 @@ fn on_gtk<T: Send + 'static>(
 pub(super) fn place(
     window: &tauri::WebviewWindow,
     frame: Rect,
+    canvas: Rect,
     scale: f64,
     mode: super::types::Mode,
 ) -> Result<LogicalRect, String> {
     if !layer_shell() {
-        return super::generic::place(window, frame, scale, mode);
+        return super::generic::place(window, frame, canvas, scale, mode);
     }
     let requested = LogicalRect {
         x: f64::from(frame.x) / scale,

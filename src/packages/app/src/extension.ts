@@ -3,10 +3,16 @@
 export type { AppProps } from "./App";
 export type { AppExtensionPage } from "./settings/pages";
 export type {
+  NewsEntry,
+  NewsItem,
+  ProductGuide,
+  SettingsStep,
+} from "./guide/plan";
+export type {
   AgentPluginContext,
   AgentPluginItem,
-} from "./settings/AgentPluginsPane";
-export { PluginControl, ToolSwitchRow } from "./settings/AgentPluginsPane";
+} from "./settings/agent-plugins/types";
+export { PluginControl, ToolSwitchRow } from "./settings/agent-plugins/rows";
 export { useOpenSettingsPage } from "./settings/SettingsNavigation";
 /** The Settings building blocks, so a product's pages look like the rest. */
 export {

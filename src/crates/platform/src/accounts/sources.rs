@@ -45,6 +45,7 @@ impl AccountService {
                 .force
                 .insert("relay".into());
         }
+        self.update_quota_levels(&snapshot["settings"][agents::account::quota_reading::SETTING]);
         let mut enabled: HashSet<String> = snapshot["providers"]
             .as_array()
             .into_iter()
@@ -160,5 +161,52 @@ impl AccountService {
             state.finished = finished;
             self.shared.wake.notify_all();
         }
+    }
+
+    /// Takes the levels the settings name; the reader of an agent whose level
+    /// changed reads again at once, its old reading dropped so none of it
+    /// lingers.
+    fn update_quota_levels(&self, setting: &Value) {
+        use agents::account::QuotaReading;
+        let levels = agents::account::quota_reading::levels(setting);
+        // An agent the setting does not name reads in full, as one it names
+        // `full` does: neither is a change.
+        let level = |levels: &HashMap<String, QuotaReading>, agent: &str| {
+            levels.get(agent).copied().unwrap_or(QuotaReading::Full)
+        };
+        let changed: Vec<String> = {
+            let mut held = self
+                .context
+                .quota_levels
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let changed = held
+                .keys()
+                .chain(levels.keys())
+                .filter(|agent| level(&held, agent) != level(&levels, agent))
+                .cloned()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            *held = levels;
+            changed
+        };
+        if changed.is_empty() {
+            return;
+        }
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for agent in changed {
+            // Pi's level governs Codex's reader too, Cursor's Grok Bot's:
+            // they read those agents' sign-ins.
+            for reader in agents::account::quota_reading::readers(&agent) {
+                state.entries.remove(reader);
+                state.force.insert(reader.to_owned());
+            }
+        }
+        self.shared.wake.notify_all();
     }
 }

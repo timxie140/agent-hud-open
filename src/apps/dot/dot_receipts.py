@@ -23,7 +23,7 @@ def pending(adapter):
     with adapter.db() as db:
         rows = db.execute("SELECT * FROM messages WHERE reply_id IS NOT NULL AND json_extract(native_receipt,'$.state')='pending_hud' ORDER BY created LIMIT 8").fetchall()
     return [{'id': row['id'], 'replyId': row['reply_id'], 'source': row['source'], 'origin': row['origin'],
-             'text': row['reply_text']} for row in rows
+             'text': row['reply_text'], 'delivery': row['delivery']} for row in rows
             if row['native_receipt'] and json.loads(row['native_receipt']).get('state') == 'pending_hud']
 
 
@@ -49,7 +49,7 @@ def claim(adapter, message_id, protocol='legacy'):
                    (canonical({'state': 'reserved', 'actualReceiptConfirmed': False}),
                     hashlib.sha256(challenge.encode()).hexdigest(), protocol, message_id))
     result = {'claimed': True, 'id': row['id'], 'replyId': row['reply_id'],
-              'source': row['source'], 'origin': row['origin'], 'text': row['reply_text'], 'receiptProtocol': protocol}
+              'source': row['source'], 'origin': row['origin'], 'text': row['reply_text'], 'delivery': row['delivery'], 'receiptProtocol': protocol}
     if protocol == 'legacy':
         result['deliveryChallenge'] = challenge
     return result

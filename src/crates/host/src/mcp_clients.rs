@@ -1,18 +1,19 @@
 //! HUD tools in each agent client, only after an explicit Settings action:
 //! Agent HUD's MCP server, added with the client's own command where it has
 //! one and in its settings file where it does not, and the skill that
-//! teaches the agent to use it. At launch, the skill of every client that
-//! has the server is brought up to date.
+//! teaches the agent to use it. At launch, every client that has the server
+//! is pointed at this copy again and its skill brought up to date.
 use crate::client_cli::{executable, run_client};
 use agent_hud_runtime::hud_tools::{Client, Places, SkillState, CLIENTS};
+use agent_hud_runtime::l10n::tr;
 use serde_json::{json, Value};
 use std::{
-    fs,
-    path::PathBuf,
     sync::{Mutex, PoisonError},
     time::Duration,
 };
 use tauri::Manager;
+#[path = "mcp_clients/entry.rs"]
+mod entry;
 #[derive(Default)]
 pub struct Clients(Mutex<()>);
 fn client(id: &str) -> Result<Client, String> {
@@ -20,41 +21,25 @@ fn client(id: &str) -> Result<Client, String> {
 }
 /// Whether the client lists Agent HUD's server.
 fn installed(client: Client, places: &Places) -> bool {
-    let path = match client {
-        Client::ClaudeCode => std::env::var_os("CLAUDE_CONFIG_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| places.home.clone())
-            .join(".claude.json"),
-        Client::Codex => std::env::var_os("CODEX_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| places.home.join(".codex"))
-            .join("config.toml"),
-        Client::Cursor | Client::DeepSeek | Client::Antigravity => return client.listed(places),
-    };
-    let Ok(meta) = fs::metadata(&path) else {
-        return false;
-    };
-    if meta.len() > 4 * 1024 * 1024 {
-        return false;
+    match client {
+        Client::ClaudeCode | Client::Codex => entry::listed(client, places).is_some(),
+        _ => client.listed(places),
     }
-    let Ok(text) = fs::read_to_string(path) else {
-        return false;
-    };
-    if client == Client::ClaudeCode {
-        serde_json::from_str::<Value>(&text)
-            .ok()
-            .and_then(|v| v["mcpServers"].get("agent-hud").cloned())
-            .is_some()
-    } else {
-        toml::from_str::<toml::Value>(&text)
-            .ok()
-            .and_then(|v| {
-                v.get("mcp_servers")
-                    .and_then(|v| v.get("agent-hud"))
-                    .cloned()
-            })
-            .is_some()
+}
+/// Adds the server again with the client's own command line, so it starts
+/// `path`: removed first, so the add never meets an entry of that name.
+fn repoint(client: Client, places: &Places, path: &std::path::Path) -> Result<(), String> {
+    let executable = executable(client.id(), &places.home)
+        .ok_or("the client's command line is not installed")?;
+    for install in [false, true] {
+        run_client(
+            &executable,
+            &args(client, install, path),
+            &places.home,
+            Duration::from_secs(15),
+        )?;
     }
+    Ok(())
 }
 /// Whether the client is on this machine: its command line, or for the
 /// clients without one, its folder or app.
@@ -91,9 +76,24 @@ fn status(app: &tauri::AppHandle) -> Result<Value, String> {
     let places = Places::current(&home);
     let options = app.state::<super::HostOptions>();
     let path = options.canonical_executable.as_ref();
-    let ready = path.is_some_and(|path| std::env::current_exe().ok().as_ref() == Some(path))
-        && super::cli::resource("agent-hud-mcp").is_some()
+    let running = std::env::current_exe().ok();
+    let installed_copy = path.is_some_and(|path| running.as_ref() == Some(path));
+    let complete = super::cli::resource("agent-hud-mcp").is_some()
         && super::cli::resource("agent-hud-engine").is_some();
+    let ready = installed_copy && complete;
+    let notice = if !installed_copy {
+        let copy = running
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        Some(tr!(
+            "Only the installed Agent HUD can add HUD tools; this copy is at {{copy}}.",
+            copy = copy
+        ))
+    } else if !complete {
+        Some(tr!("This copy of Agent HUD is missing its MCP components."))
+    } else {
+        None
+    };
     let clients = CLIENTS
         .iter()
         .map(|&client| {
@@ -115,7 +115,7 @@ fn status(app: &tauri::AppHandle) -> Result<Value, String> {
         .collect::<Vec<_>>();
     Ok(json!({
         "ready": ready,
-        "notice": if ready { None } else { Some("MCP setup requires the fixed installed app and its packaged relay") },
+        "notice": notice,
         "json": path.map(|path| json!({"mcpServers":{"agent-hud":{"command":path,"args":["--mcp"]}}})),
         "clients": clients,
     }))
@@ -168,9 +168,10 @@ fn run(app: &tauri::AppHandle, id: &str, install: bool) -> Result<Value, String>
     }
     status(app)
 }
-/// At launch: brings the skill up to date in every client that lists Agent
-/// HUD's server, adding it where an older version added only the server.
-/// Never adds a server, and only logs a failure.
+/// At launch, in every client that lists Agent HUD's server: points the
+/// server at this copy when it names another (a copy that moved, Open #100),
+/// and brings the skill up to date, adding it where an older version added
+/// only the server. Never adds a server, and only logs a failure.
 pub(crate) fn repair_on_launch(app: &tauri::AppHandle) {
     // The demo leaves the user's clients alone.
     if app.state::<super::AppState>().demo {
@@ -183,10 +184,28 @@ pub(crate) fn repair_on_launch(app: &tauri::AppHandle) {
         let Ok(home) = agent_hud_runtime::home_directory() else {
             return;
         };
+        let canonical = app
+            .state::<super::HostOptions>()
+            .canonical_executable
+            .clone();
         let places = Places::current(&home);
         for client in CLIENTS {
             if !installed(client, &places) {
                 continue;
+            }
+            if let Some(path) = canonical.as_deref() {
+                if client.command().is_none() {
+                    let _ = client.set_server(&places, Some(path));
+                } else if entry::listed(client, &places)
+                    .is_some_and(|entry| entry.points_elsewhere(path))
+                {
+                    if let Err(error) = repoint(client, &places, path) {
+                        eprintln!(
+                            "Agent HUD's MCP server in {} still starts another copy: {error}",
+                            client.name()
+                        );
+                    }
+                }
             }
             match client.skill_state(&places) {
                 SkillState::Current | SkillState::Foreign => {}

@@ -37,7 +37,7 @@ MAILBOX = 'dot'
 # Accepted only for existing tasks; both names bind the same single recipient.
 LEGACY_MAILBOX = 'luo'
 LIMIT = 256 * 1024
-ADAPTER_VERSION = '0.3.0'
+ADAPTER_VERSION = '0.4.0'
 
 
 class Rejected(Exception):
@@ -555,7 +555,7 @@ class Adapter:
         if method == 'tools/list':
             definitions = [('hud_ack_message', ['id'], 'Dot only: acknowledge an incoming Codex message event actually received by Dot. Not for Codex receipts or delivery_receipt events.'),
                            ('hud_list_sessions', [], 'Dot only: list fresh existing Codex sessions on this entry’s machine. This is not the local Agent HUD list_sessions and never lists DSH/Claude. Codex/DSH agents must use local Agent HUD list_sessions. Never guess IDs or create replacement chats.'),
-                           ('hud_send_message', ['host_id', 'session_id', 'text', 'request_id'], 'Dot-to-Codex only: choose this entry’s Mac/Windows host.id and existing session from hud_list_sessions. session_id accepts a UUID or exact codex://threads/<UUID> URL. Use one new stable request_id per intended send; identical calls only read its receipt, never resend. Active Desktop steers; idle/no owner queues. Never use a new request_id to retry uncertain/refused sends. Await delivery_receipt.'),
+                           ('hud_send_message', ['host_id', 'session_id', 'text', 'request_id'], 'Dot-to-Codex only: choose this entry’s Mac/Windows host.id and existing session from hud_list_sessions. session_id accepts a UUID or exact codex://threads/<UUID> URL. Use one new stable request_id per intended send; identical calls only read its receipt, never resend. Defaults to queue. Explicit delivery=steer requires authorization; refusal never falls back to queue. Never use a new request_id to retry uncertain/refused sends. Await delivery_receipt.'),
                            ('hud_reply', ['id', 'text'], 'Dot-to-Codex only: reply once to an incoming Codex message with origin=codex. Codex answering a Dot-initiated message must use local Agent HUD send_message(reply_to=received_id), not this tool. transportState reports native queued/steered/started, or pending_hud while awaiting HUD. Never resend on pending/uncertain; recipientConfirmed is separate. Await delivery_receipt or query hud_get_delivery_status.'),
                            ('hud_get_delivery_status', ['id'], 'Read whether the actual recipient confirmed your reply. Read-only; never acknowledges delivery.')]
             if role == 'local':
@@ -563,7 +563,7 @@ class Adapter:
                                ('hud_send_to_dot', ['id', 'text'], 'Send one HUD message to subscribed Dot.'),
                                ('hud_get_message', ['id'], 'Read a message receipt; this is not an actual chat input.')]
             return {'tools': [{'name': name, 'description': description, 'inputSchema': {
-                'type': 'object', 'properties': {x: {'type': 'string'} for x in fields},
+                'type': 'object', 'properties': {**{x: {'type': 'string'} for x in fields}, **({'delivery': {'type': 'string', 'enum': ['queue', 'steer'], 'default': 'queue'}} if name == 'hud_send_message' else {})},
                 'required': fields, 'additionalProperties': False}, 'annotations': {
                     'readOnlyHint': name in ('hud_get_message', 'hud_dot_status', 'hud_get_delivery_status', 'hud_list_sessions'), 'destructiveHint': False,
                     'openWorldHint': name not in ('hud_get_message', 'hud_dot_status')}} for name, fields, description in definitions]}
@@ -581,7 +581,7 @@ class Adapter:
                 result = inventory(self)
             elif role == 'dot' and name == 'hud_send_message':
                 from dot_sessions import send
-                result = send(self, args.get('session_id'), args.get('text'), args.get('request_id'), args.get('host_id'))
+                result = send(self, args.get('session_id'), args.get('text'), args.get('request_id'), args.get('host_id'), args.get('delivery', 'queue'))
             elif role == 'dot' and name == 'hud_ack_message':
                 result = self.ack(args.get('id'))
             elif role == 'dot' and name == 'hud_reply':

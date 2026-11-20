@@ -1,6 +1,12 @@
 import { labelWidth } from "../geometry";
-import { useFormat } from "@agent-hud/ui/format-context";
-import { quotaPercentLabel, type QuotaDisplay } from "@agent-hud/ui/format";
+import { useFormat, useT } from "@agent-hud/ui/format-context";
+import {
+  isChinese,
+  quotaPercentLabel,
+  translator,
+  type Language,
+  type QuotaDisplay,
+} from "@agent-hud/ui/format";
 import { useMarkLevelText } from "../ground";
 import {
   quotaShortName,
@@ -20,15 +26,16 @@ export interface PeekItem {
  * per short name, then the balance of an API-billed agent. */
 export function peekItems(
   vendor: HUDVendor,
-  zh: boolean,
+  language: Language,
   color: (level: HUDVendor["level"]) => string = statusColor,
   display?: QuotaDisplay,
 ): PeekItem[] {
+  const t = translator(language);
   if (vendor.key === "dot")
     return [
       {
         id: "connection",
-        label: zh ? "连接状态" : "Connection",
+        label: isChinese(language) ? "连接状态" : "Connection",
         value: vendor.usage ?? "--",
       },
     ];
@@ -52,12 +59,12 @@ export function peekItems(
   if (vendor.balance)
     items.push({
       id: "balance",
-      label: zh ? "余额" : "Balance",
+      label: t("Balance"),
       value: vendor.balance,
       color: color(vendor.level),
     });
   if (!items.length)
-    items.push({ id: "quota", label: zh ? "额度" : "Quota", value: "--" });
+    items.push({ id: "quota", label: t("Quota"), value: "--" });
   return items;
 }
 
@@ -65,14 +72,14 @@ export function peekItems(
 export function peekLineWidth(
   vendor: HUDVendor,
   scale: number,
-  zh: boolean,
+  language: Language,
   tuck: number,
   display?: QuotaDisplay,
 ): number {
   const font = Math.round(9 * scale),
     gap = Math.round(5 * scale),
     spacing = Math.round(12 * scale),
-    items = peekItems(vendor, zh, statusColor, display);
+    items = peekItems(vendor, language, statusColor, display);
   const cells = items.length
     ? items.reduce(
         (sum, item) =>
@@ -96,7 +103,6 @@ export function AgentPeek({
   simple,
   scale,
   light = false,
-  zh,
   tuck = 0,
   edge = "top",
 }: {
@@ -104,14 +110,14 @@ export function AgentPeek({
   simple: boolean;
   scale: number;
   light?: boolean;
-  zh: boolean;
   tuck?: number;
   edge?: HUDEdge;
 }) {
   const color = useMarkLevelText(light);
-  const { quotaDisplay } = useFormat();
+  const { quotaDisplay, language } = useFormat();
+  const t = useT();
   if (simple) {
-    const items = peekItems(vendor, zh, color, quotaDisplay);
+    const items = peekItems(vendor, language, color, quotaDisplay);
     return (
       <div
         className="hud-agent-peek-line"
@@ -204,12 +210,10 @@ export function AgentPeek({
         >
           <span style={{ opacity: 0.55 }}>
             {vendor.key === "dot"
-              ? zh
+              ? isChinese(language)
                 ? "连接状态"
                 : "Connection"
-              : zh
-                ? "额度"
-                : "Quota"}
+              : t("Quota")}
           </span>
           <strong>
             {vendor.key === "dot" ? (vendor.usage ?? "--") : "--"}
@@ -225,7 +229,7 @@ export function AgentPeek({
             height: 18 * scale,
           }}
         >
-          <span style={{ opacity: 0.55 }}>{zh ? "余额" : "Balance"}</span>
+          <span style={{ opacity: 0.55 }}>{t("Balance")}</span>
           <strong
             style={{
               color: color(vendor.level),

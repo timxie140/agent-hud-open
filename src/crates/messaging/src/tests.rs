@@ -43,9 +43,10 @@ fn compressed(session: &str) -> bool {
     session.starts_with("deepseek:")
 }
 
-/// A Codex that queues what it is given and remembers it.
+/// A Codex that queues what it is given and remembers it. A steer goes into
+/// its turn in progress, unless it has none (`.1`, idle): then nothing goes in.
 #[derive(Default)]
-struct Codex(Mutex<Vec<SendRequest>>, AtomicBool);
+struct Codex(Mutex<Vec<SendRequest>>, AtomicBool, AtomicBool);
 impl CodexTransport for Codex {
     fn received_input(
         &self,
@@ -55,7 +56,7 @@ impl CodexTransport for Codex {
         fingerprint: &str,
         _timeout: Duration,
     ) -> delivery::Result<Option<delivery::ReceivedInput>> {
-        if !self.1.load(AtomicOrdering::SeqCst) {
+        if !self.2.load(AtomicOrdering::SeqCst) {
             return Ok(None);
         }
         Ok(self
@@ -80,15 +81,25 @@ impl CodexTransport for Codex {
         _timeout: Duration,
     ) -> delivery::Result<Receipt> {
         self.0.lock().unwrap().push(request.clone());
+        let steer = request.operation == Operation::Steer;
+        if steer && self.1.load(AtomicOrdering::SeqCst) {
+            return Err(delivery::Failure::Rejected(
+                delivery::NO_TURN_TO_STEER.into(),
+            ));
+        }
         Ok(Receipt {
             provider: Provider::Codex,
             session_id: target.session_id.clone(),
             thread_id: target.thread_id.clone(),
             request_id: request.request_id.clone(),
             client_request_id: format!("agent-hud:{}", request.request_id),
-            turn_id: None,
+            turn_id: steer.then(|| "turn-in-progress".into()),
             owner_client_id: None,
-            state: DeliveryState::Queued,
+            state: if steer {
+                DeliveryState::Steered
+            } else {
+                DeliveryState::Queued
+            },
             at_ms: 0,
             reason: None,
         })
@@ -269,7 +280,11 @@ impl Transcripts {
                     turn: Some(turn),
                     id: format!("i{order}"),
                     order,
-                    role: Role::Assistant,
+                    role: if row["role"] == "user" {
+                        Role::User
+                    } else {
+                        Role::Assistant
+                    },
                     kind: if tool { FeedKind::Tool } else { FeedKind::Text },
                     text: if tool {
                         "Bash".into()
@@ -305,6 +320,11 @@ impl Transcripts {
             session,
             json!({"role":"assistant","isPrompt":false,"turnId":turn,"text":text,"toolCall":null}),
         );
+    }
+    /// Words that went into `turn` while it ran (a steer): a user row of
+    /// that turn, carrying when the turn began.
+    fn steered(&self, session: &str, turn: &str, text: &str) {
+        self.push(session, json!({"role":"user","isPrompt":false,"turnId":turn,"text":text,"turnStartedAt":"2026-10-21T16:00:00Z","toolCall":null}));
     }
     fn tool(&self, session: &str, turn: &str) {
         self.push(session, json!({"role":"assistant","isPrompt":false,"turnId":turn,"text":null,"toolCall":{"name":"Bash"}}));
@@ -395,6 +415,13 @@ impl World {
         Self::new_with_antigravity(preferences, false)
     }
     fn new_with_antigravity(preferences: Preferences, uncertain: bool) -> Self {
+        Self::build(preferences, uncertain, &[])
+    }
+    /// With these clients' command lines installed (Pi, OpenCode).
+    fn new_with_commands(preferences: Preferences, installed: &[Provider]) -> Self {
+        Self::build(preferences, false, installed)
+    }
+    fn build(preferences: Preferences, uncertain: bool, installed: &[Provider]) -> Self {
         let fixture = StartFixture::new();
         let channel = fixture.root.join("claude-channel");
         let harness_channel = fixture.root.join("deepseek-channel");
@@ -426,7 +453,18 @@ impl World {
                 codex_command: true,
             },
             clients.clone(),
-            fixture.starts(),
+            {
+                let mut starts = fixture.starts();
+                starts.set_commands(
+                    installed
+                        .iter()
+                        .map(|provider| {
+                            (*provider, fixture.root.join("bin").join(provider.as_str()))
+                        })
+                        .collect(),
+                );
+                starts.with_deepseek_channel(clients.deepseek_channel())
+            },
             Arc::new(move |receipt| follow.lock().unwrap().push(receipt)),
             Arc::new(move |flight| fly.lock().unwrap().push(flight)),
         );
@@ -515,6 +553,29 @@ impl World {
     }
     fn send(&mut self, from: (&str, &str), to: &str, text: &str) -> Value {
         self.call(Some(from), "send_message", json!({"to":to,"text":text}))
+    }
+    /// The places the clipboard window offers the person.
+    fn user_sessions(&mut self) -> Value {
+        let query = self.transcripts.query();
+        let host = Host {
+            snapshot: &self.snapshot,
+            query: &query,
+            conversations: None,
+        };
+        self.messaging.user_sessions(&host)
+    }
+    /// The person's own words from the clipboard window to `target`.
+    fn user_send(&mut self, target: Value, text: &str) -> Value {
+        let query = self.transcripts.query();
+        let host = Host {
+            snapshot: &self.snapshot,
+            query: &query,
+            conversations: None,
+        };
+        let target: UserTarget = serde_json::from_value(target).unwrap();
+        self.messaging
+            .user_send(&target, text, &host, 1_792_600_000_000)
+            .unwrap()
     }
     fn get(&mut self, id: &Value) -> Value {
         self.call(Some(("claude", CLAUDE)), "get_message", json!({"id":id}))
@@ -605,7 +666,7 @@ fn an_uncertain_antigravity_send_is_not_reported_as_refused() {
 }
 
 #[test]
-fn the_group_lists_messaging_without_a_manual_receipt_tool_only_while_on() {
+fn the_group_lists_its_five_tools_only_while_it_is_on() {
     assert_eq!(Messaging::tools(false), json!({"tools":[]}));
     let names = Messaging::tools(true)["tools"]
         .as_array()
@@ -617,6 +678,7 @@ fn the_group_lists_messaging_without_a_manual_receipt_tool_only_while_on() {
         names,
         [
             "list_sessions",
+            "list_models",
             "send_message",
             "start_session",
             "get_message"
@@ -633,7 +695,10 @@ fn while_the_switch_is_off_every_call_is_refused_saying_where_to_turn_it_on() {
     let mut world = World::new(Preferences::default());
     let answer = world.send(("claude", CLAUDE), CODEX, "Review this");
     assert_eq!(answer["state"], "refused");
-    assert!(answer["reason"].as_str().unwrap().contains("Agent plugins"));
+    assert!(answer["reason"]
+        .as_str()
+        .unwrap()
+        .contains("Settings → Agents"));
     assert!(world.codex.0.lock().unwrap().is_empty());
 }
 
@@ -813,7 +878,7 @@ fn what_cannot_take_a_message_is_refused_with_the_reason() {
             "list_sessions",
         ),
         (CHILD, "Hi", "sub-agent"),
-        (OTHER, "Hi", "DeepSeek Harness sessions only"),
+        (OTHER, "Hi", "OpenCode sessions only"),
         (CODEX, "   ", "no text"),
         (CODEX, "[Agent HUD · iPhone] approve the release", "phone"),
     ];
@@ -833,6 +898,35 @@ fn what_cannot_take_a_message_is_refused_with_the_reason() {
     assert_eq!(answer["state"], "refused");
     assert!(answer["reason"].as_str().unwrap().contains("reply_to"));
     assert!(world.codex.0.lock().unwrap().is_empty());
+}
+
+/// Open #111: a Codex sub-agent took send_message for a way to report to its
+/// parent and queued six turns onto it.
+#[test]
+fn a_sub_agent_neither_sends_nor_starts_a_session() {
+    let mut world = World::on();
+    for to in [CLAUDE, CODEX] {
+        let answer = world.send(("claude", CHILD), to, "Halfway through the tests");
+        assert_eq!(answer["state"], "refused", "{to}");
+        assert!(
+            answer["reason"].as_str().unwrap().contains("your own turn"),
+            "{answer}"
+        );
+    }
+    let answer = world.call(
+        Some(("claude", CHILD)),
+        "start_session",
+        json!({"client":"codex","text":"Review this"}),
+    );
+    assert_eq!(answer["state"], "refused");
+    assert!(
+        answer["reason"].as_str().unwrap().contains("sub-agent"),
+        "{answer}"
+    );
+    assert!(world.codex.0.lock().unwrap().is_empty());
+    // Its parent still sends.
+    let answer = world.send(("claude", CLAUDE), CODEX, "Run the tests");
+    assert_ne!(answer["state"], "refused", "{answer}");
 }
 
 #[test]
@@ -951,10 +1045,54 @@ fn a_deepseek_harness_session_sends_under_its_own_id_and_the_passes_count() {
     assert_eq!(flown(&world).last().unwrap()["from"], "deepseek");
 }
 
+/// A Harness host running Agent HUD's plugin: it checks in under process
+/// 777 and, like the plugin, answers the next start asked of it with a new
+/// session whose first message it queued. Returns the request it took.
+fn harness_host(
+    channel: &std::path::Path,
+    session: &'static str,
+) -> std::thread::JoinHandle<Value> {
+    std::fs::create_dir_all(channel.join("hosts")).unwrap();
+    std::fs::write(
+        channel.join("hosts/777.json"),
+        br#"{"at":1,"desktop":false,"channelVersion":1}"#,
+    )
+    .unwrap();
+    let folder = channel.join("starts/777");
+    std::thread::spawn(move || {
+        for _ in 0..400 {
+            // As the plugin does: only `.json` requests (Agent HUD writes each
+            // through a `.tmp` beside it first), answered by a rename.
+            if let Some(file) = std::fs::read_dir(&folder).ok().and_then(|files| {
+                files
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .find(|path| path.extension().is_some_and(|e| e == "json"))
+            }) {
+                if let Some(asked) = std::fs::read(&file)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                {
+                    let answer = file.with_extension("answer");
+                    std::fs::write(
+                        &answer,
+                        json!({"takenAt":1,"sessionId":session,"startedAt":2}).to_string(),
+                    )
+                    .unwrap();
+                    std::fs::rename(&answer, &file).unwrap();
+                    return asked;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("no start was asked of the Harness host");
+    })
+}
+
 #[test]
-fn a_deepseek_harness_session_is_refused_without_its_plugin_or_switch_and_is_never_started() {
+fn a_deepseek_harness_session_starts_through_its_plugin_in_a_running_host() {
     let mut world = World::on();
-    world.harness();
+    // No plugin folders: nothing to start a session with.
     let start = world.call(
         Some(("claude", CLAUDE)),
         "start_session",
@@ -964,7 +1102,51 @@ fn a_deepseek_harness_session_is_refused_without_its_plugin_or_switch_and_is_nev
     assert!(start["reason"]
         .as_str()
         .unwrap()
-        .contains("cannot start DeepSeek Harness"));
+        .contains("install Agent HUD's DeepSeek Harness plugin"));
+    world.harness();
+    let host = harness_host(&world.harness_channel, HARNESS_TWO_OWN);
+    let listed = world.call(Some(("claude", CLAUDE)), "list_sessions", json!({}));
+    assert_eq!(
+        listed["startFolders"]["deepseek"]["folders"],
+        json!(["~/project"])
+    );
+    // "Send messages" off on the plugin's row: the first message is one too.
+    world.snapshot["settings"]["deepseekMessages"] = json!(false);
+    let start = world.call(
+        Some(("claude", CLAUDE)),
+        "start_session",
+        json!({"client":"deepseek","text":"Port the parser"}),
+    );
+    assert_eq!(start["reason"], DEEPSEEK_MESSAGES_OFF);
+    world.snapshot["settings"]["deepseekMessages"] = json!(true);
+    let start = world.call(
+        Some(("claude", CLAUDE)),
+        "start_session",
+        json!({"client":"deepseek","text":"Port the parser"}),
+    );
+    assert_eq!(start["state"], "started", "{start}");
+    // Named as list_sessions will name it, so its answer is found.
+    assert_eq!(start["sessionId"], HARNESS_TWO);
+    let asked = host.join().unwrap();
+    assert_eq!(asked["cwd"], json!(world.fixture.home().join("project")));
+    let text = asked["text"].as_str().unwrap();
+    assert!(text.starts_with("[Agent HUD · from Claude Code"), "{text}");
+    assert!(text.contains("Port the parser"));
+    // Its answer is read from the new session's pages, under that id.
+    let id = start["id"].clone();
+    world.harness_session(HARNESS_TWO, HARNESS_TWO_OWN, "Port the parser");
+    world.transcripts.prompt(HARNESS_TWO, "h1", text);
+    world.transcripts.reply(HARNESS_TWO, "h1", "Ported.");
+    world.live(HARNESS_TWO, json!({"turnId":"h1","turnStartedAt":"2026-10-22T01:00:00Z","endedAt":"2026-10-22T01:03:00Z"}));
+    let done = world.get(&id);
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!(done["answer"], "Ported.");
+}
+
+#[test]
+fn a_deepseek_harness_session_is_refused_without_its_plugin_or_switch() {
+    let mut world = World::on();
+    world.harness();
     // "Send messages" off on its plugin's row.
     world.snapshot["settings"]["deepseekMessages"] = json!(false);
     let answer = world.send(("claude", CLAUDE), HARNESS, "Hi");
@@ -1064,6 +1246,38 @@ fn passes_count_while_messages_wake_each_other_and_stop_at_the_limit() {
     let fifth = world.send(("codex", CODEX), CLAUDE, "Merged");
     assert_eq!(fifth["pass"], 1);
     assert_eq!(fifth["state"], "queued");
+}
+
+#[test]
+fn a_reply_goes_back_to_its_senders_client_when_another_client_has_the_same_id() {
+    let mut world = World::on();
+    // A Codex session whose id is the same string as the Claude sender's,
+    // listed first so an id-only lookup would pick it.
+    let project = world.fixture.home().join("project");
+    world.snapshot["sessions"].as_array_mut().unwrap().insert(
+        0,
+        json!({"id":CLAUDE,"source":"codex","title":"Twin","cwd":project,"state":"idle","parentId":null,"updatedAt":"2026-10-22T01:00:04Z","liveFacts":{}}),
+    );
+    let first = world.send(("claude", CLAUDE), CODEX, "Review this");
+    assert_eq!(first["state"], "queued", "{first}");
+    let first_id = first["id"].as_str().unwrap().to_owned();
+    let reply = world.call(
+        Some(("codex", CODEX)),
+        "send_message",
+        json!({"text":"Two nits","reply_to":first_id}),
+    );
+    assert_eq!(reply["state"], "queued", "{reply}");
+    let reply_id = reply["id"].as_str().unwrap();
+    assert!(world.claude_words(CLAUDE, reply_id).contains("Two nits"));
+    assert_eq!(
+        world.codex.0.lock().unwrap().len(),
+        1,
+        "nothing went to the twin"
+    );
+    // A bare id two clients share names neither: nothing is sent.
+    let named = world.send(("codex", CODEX), CLAUDE, "Which one?");
+    assert_eq!(named["state"], "refused", "{named}");
+    assert_eq!(world.codex.0.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -1409,6 +1623,144 @@ fn a_new_session_appears_before_it_catches() {
     assert_eq!(
         flown(&world),
         [json!({"from":"claude","to":"claude","fromLeft":true,"arrives":true,"falls":false})]
+    );
+}
+
+#[test]
+fn the_window_offers_only_agents_that_are_turned_on() {
+    let mut world = World::new(Preferences::default());
+    let project = world.fixture.home().join("project");
+    world.snapshot["sessions"].as_array_mut().unwrap().push(json!(
+        {"id":"cascade-1","source":"antigravity","title":"Plan the move","cwd":project,"state":"idle","parentId":null,"updatedAt":"2026-10-22T00:58:00Z","liveFacts":{}}
+    ));
+    let offered = |listing: &Value| {
+        let rows = listing["sessions"].as_array().unwrap().iter();
+        let starts = listing["starts"].as_array().unwrap().iter();
+        rows.chain(starts)
+            .map(|row| row["client"].as_str().unwrap().to_owned())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let all = offered(&world.user_sessions());
+    assert!(
+        ["claude", "codex", "antigravity"]
+            .iter()
+            .all(|client| all.contains(*client)),
+        "{all:?}"
+    );
+    // Claude Code's own "Send messages" switch off.
+    world.snapshot["settings"]["claudeMessages"] = json!(false);
+    assert!(!offered(&world.user_sessions()).contains("claude"));
+    // Codex turned off in Agent HUD: not offered, and not sent to.
+    world.snapshot["providers"] = json!([{"id":"codex","enabled":false}]);
+    let left = offered(&world.user_sessions());
+    assert!(
+        !left.contains("codex") && left.contains("antigravity"),
+        "{left:?}"
+    );
+    let refused = world.user_send(
+        json!({"kind":"session","client":"codex","sessionId":CODEX}),
+        "Look at this",
+    );
+    assert_eq!(refused["state"], "refused");
+    assert!(flown(&world).is_empty());
+}
+
+#[test]
+fn the_window_offers_a_pi_session_only_while_it_is_open() {
+    let mut world = World::new(Preferences::default());
+    let project = world.fixture.home().join("project");
+    for id in ["pi:open", "pi:closed"] {
+        world.snapshot["sessions"].as_array_mut().unwrap().push(json!(
+            {"id":id,"source":"pi","title":id,"cwd":project,"state":"idle","parentId":null,"updatedAt":"2026-10-22T00:58:00Z","liveFacts":{}}
+        ));
+    }
+    // Agent HUD's observer in a running Pi holds the open one.
+    let observers = world
+        .fixture
+        .root
+        .join("client-receipts/hook-channel/observers");
+    std::fs::create_dir_all(&observers).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    std::fs::write(
+        observers.join("pi.json"),
+        json!({"client":"pi","at":now,"sessions":["open"],"pid":std::process::id()}).to_string(),
+    )
+    .unwrap();
+    let listing = world.user_sessions();
+    let pi = listing["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["client"] == "pi")
+        .map(|row| row["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(pi, ["pi:open"]);
+    // Pi is not installed here: no new Pi session is offered.
+    assert!(listing["starts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|start| start["client"] != "pi"));
+}
+
+#[test]
+fn the_window_offers_a_new_pi_or_opencode_session_where_installed() {
+    let mut world = World::new_with_commands(Preferences::default(), &[Provider::Pi]);
+    let listing = world.user_sessions();
+    let pi = listing["starts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|start| start["client"] == "pi")
+        .unwrap();
+    assert_eq!(pi["withoutFolder"], true);
+    assert!(listing["starts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|start| start["client"] != "opencode"));
+    // `start_session` starts none: its folders list leaves Pi out.
+    let mut world = World::new_with_commands(
+        Preferences {
+            enabled: true,
+            ..Default::default()
+        },
+        &[Provider::Pi, Provider::OpenCode],
+    );
+    let list = world.call(Some(("claude", CLAUDE)), "list_sessions", json!({}));
+    let folders = list["startFolders"].as_object().unwrap();
+    assert!(folders.contains_key("claude"), "{folders:?}");
+    assert!(!folders.contains_key("pi") && !folders.contains_key("opencode"));
+}
+
+#[test]
+fn the_persons_words_fly_from_the_bubble_once_they_go() {
+    let mut world = World::new(Preferences::default());
+    let sent = world.user_send(
+        json!({"kind":"session","client":"codex","sessionId":CODEX}),
+        "Look at this",
+    );
+    assert_ne!(sent["state"], "refused", "{sent}");
+    // Not a client the window sends to: nothing goes, nothing flies.
+    let refused = world.user_send(
+        json!({"kind":"session","client":"gemini","sessionId":OTHER}),
+        "Hi",
+    );
+    assert_eq!(refused["state"], "refused");
+    let started = world.user_send(
+        json!({"kind":"new","client":"claude","folder":""}),
+        "Run the whole suite",
+    );
+    assert_ne!(started["state"], "refused", "{started}");
+    assert_eq!(
+        flown(&world),
+        [
+            json!({"from":"person","to":"codex","fromLeft":false,"arrives":false,"falls":false}),
+            json!({"from":"person","to":"claude","fromLeft":false,"arrives":true,"falls":false}),
+        ]
     );
 }
 
@@ -1760,14 +2112,15 @@ fn the_reply_line_names_the_tool_as_the_recipients_client_does() {
         session_id: CLAUDE.into(),
         title: None,
     };
-    let line = |zh, client, reply_to| {
+    let line = |language, client, reply_to| {
         words::compose(
-            zh,
+            language,
             PromptForm::Labelled,
             &from,
             client,
             "m-1",
             reply_to,
+            true,
             "Hi",
         )
         .lines()
@@ -1775,21 +2128,93 @@ fn the_reply_line_names_the_tool_as_the_recipients_client_does() {
         .unwrap()
         .to_owned()
     };
-    assert!(line(false, "claude", None).contains("mcp__agent-hud__send_message"));
-    assert!(line(false, "deepseek", None).contains("mcp__agent-hud__send_message"));
-    assert!(line(false, "codex", None).contains("mcp__agent_hud__send_message"));
+    assert!(line(Language::En, "claude", None).contains("mcp__agent-hud__send_message"));
+    assert!(line(Language::En, "deepseek", None).contains("mcp__agent-hud__send_message"));
+    assert!(line(Language::En, "codex", None).contains("mcp__agent_hud__send_message"));
     assert_eq!(
-        line(false, "antigravity", None),
+        line(Language::En, "antigravity", None),
         "Reply with agent-hud's send_message tool, reply_to: m-1: your reply reaches the sender as a message. Without that tool, answer here: the sender can read this turn's last reply."
     );
     assert_eq!(
-        line(true, "deepseek", Some("m-0")),
+        line(Language::ZhHans, "deepseek", Some("m-0")),
         "这是对 m-0 的回复。还需要再说时，用 agent-hud 的 MCP 工具 mcp__agent-hud__send_message 回复，reply_to: m-1。"
     );
     assert_eq!(
-        words::compose(false, PromptForm::Own, &from, "codex", "m-1", None, "Hi"),
+        words::compose(
+            Language::En,
+            PromptForm::Own,
+            &from,
+            "codex",
+            "m-1",
+            None,
+            true,
+            "Hi"
+        ),
         "Hi"
     );
+}
+
+/// A message's first line names the client it came from. Grok Bot, Pi and
+/// OpenCode used to fall through to "Codex".
+#[test]
+fn a_message_from_grok_bot_pi_or_opencode_names_that_client_in_the_sender_label() {
+    for (client, name) in [
+        ("grok-bot", "Grok Bot"),
+        ("pi", "Pi"),
+        ("opencode", "OpenCode"),
+    ] {
+        let from = Party {
+            client: client.into(),
+            session_id: format!("{client}:paired"),
+            title: Some("Paired".into()),
+        };
+        let message = words::compose(
+            Language::En,
+            PromptForm::Labelled,
+            &from,
+            "codex",
+            "m-1",
+            None,
+            false,
+            "Check the release notes.",
+        );
+        assert_eq!(
+            message.lines().next(),
+            Some(format!("[Agent HUD · from {name} · Paired · m-1]").as_str())
+        );
+    }
+}
+
+/// A sender that reads the answer itself leaves out the reply hint: the last
+/// line asks the recipient to answer in its turn and names no tool.
+#[test]
+fn without_the_reply_hint_the_recipient_is_asked_to_answer_in_its_turn() {
+    let from = Party {
+        client: "claude".into(),
+        session_id: CLAUDE.into(),
+        title: None,
+    };
+    let line = |language, reply_to| {
+        let words = words::compose(
+            language,
+            PromptForm::Labelled,
+            &from,
+            "codex",
+            "m-1",
+            reply_to,
+            false,
+            "Hi",
+        );
+        assert!(!words.contains("send_message"), "{words}");
+        words.lines().last().unwrap().to_owned()
+    };
+    assert_eq!(
+        line(Language::En, None),
+        "Answer here: the sender reads this turn's last reply, so send nothing back."
+    );
+    assert_eq!(line(Language::ZhHans, Some("m-0")), "这是对 m-0 的回复。");
+    let tools = Messaging::tools(true).to_string();
+    assert_eq!(tools.matches("\"reply_hint\"").count(), 2);
 }
 
 /// Open decodes a compressed log from its start, 2 MiB a look, with one
@@ -1999,12 +2424,13 @@ fn an_antigravity_answer_flies_back_once_the_store_reads_it() {
     let id = message["id"].as_str().unwrap().to_owned();
     let sent = world.messaging.journal.find(&id).unwrap().sent_at_ms;
     let words = words::compose(
-        false,
+        Language::En,
         PromptForm::Labelled,
         &party(&world.snapshot, "claude", CLAUDE),
         "antigravity",
         &id,
         None,
+        true,
         "Plan the opening shot",
     );
     world.antigravity_facts(vec![
@@ -2070,12 +2496,13 @@ fn an_antigravity_answer_the_store_cannot_tie_to_the_message_flies_only_its_repl
     let id = message["id"].as_str().unwrap().to_owned();
     let sent = world.messaging.journal.find(&id).unwrap().sent_at_ms;
     let words = words::compose(
-        false,
+        Language::En,
         PromptForm::Labelled,
         &party(&world.snapshot, "claude", CLAUDE),
         "antigravity",
         &id,
         None,
+        true,
         "Got your message",
     );
     let item = |turn: &str, id: &str, order: u64, role: Role, text: &str| {
@@ -2148,3 +2575,194 @@ impl Preferences {
         })
     }
 }
+
+#[test]
+fn an_answer_a_later_turn_hides_is_still_given() {
+    // OpenCode is read only through its latest turn: once the next one ends,
+    // get_message gives the answer that was thrown back.
+    let mut world = World::on();
+    let session = "opencode:ses_a1b2";
+    world.snapshot["sessions"].as_array_mut().unwrap().push(json!(
+        {"id":session,"source":"opencode","title":"Port","cwd":"/p","state":"idle","parentId":null,"updatedAt":"2026-10-22T01:00:00Z","liveFacts":{}}
+    ));
+    let sent = world.send(("claude", CLAUDE), session, "Port the parser");
+    assert_eq!(sent["state"], "queued", "{sent}");
+    let id = sent["id"].as_str().unwrap().to_owned();
+    let now = 1_792_600_000_000;
+    // Its turn ended while the session's next one already runs.
+    world.state(session, "running");
+    world.live(
+        session,
+        json!({"turnId":"t1","turnStartedAt":at(now + 1_000),"endedAt":at(now + 3_000),"delivered":id,"message":"Ported."}),
+    );
+    world.maintain(now + 4_000);
+    assert_eq!(flown(&world).len(), 2, "sent and back");
+    world.state(session, "idle");
+    world.live(
+        session,
+        json!({"turnId":"t2","turnStartedAt":at(now + 5_000),"endedAt":at(now + 9_000),"message":"Something else."}),
+    );
+    let got = world.get(&json!(id));
+    assert_eq!(got["state"], "done", "{got}");
+    assert_eq!(got["answer"], "Ported.");
+    assert_eq!(got["endedAt"], at(now + 3_000));
+}
+
+/// The row list_sessions gives for a session.
+fn listed(world: &mut World, id: &str) -> Value {
+    let list = world.call(Some(("claude", CLAUDE)), "list_sessions", json!({}));
+    list["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == id)
+        .unwrap()
+        .clone()
+}
+
+#[test]
+fn a_steer_goes_into_the_codex_turn_in_progress_marked_as_such_and_counts_as_a_pass() {
+    let mut world = World::on();
+    let answer = world.call(
+        Some(("claude", CLAUDE)),
+        "send_message",
+        json!({"to":CODEX,"text":"Stop: the API is v2 now, not v1.","delivery":"steer"}),
+    );
+    assert_eq!(answer["state"], "steered", "{answer}");
+    assert_eq!(answer["pass"], 1);
+    let id = answer["id"].as_str().unwrap().to_owned();
+    let sent = world.codex.0.lock().unwrap()[0].clone();
+    assert_eq!(sent.operation, Operation::Steer);
+    assert_eq!(
+        sent.expected_turn_id, None,
+        "the turn in progress, as Codex finds it"
+    );
+    assert_eq!(
+        sent.text.lines().next().unwrap(),
+        format!("[Agent HUD · from Claude Code · Fix the login · {id} · into your current turn]")
+    );
+    assert!(sent.text.contains("Stop: the API is v2 now, not v1."));
+    // queue, or no delivery at all, is the queue as before.
+    for arguments in [
+        json!({"to":CODEX,"text":"Then review it.","delivery":"queue"}),
+        json!({"to":CODEX,"text":"Then review it."}),
+    ] {
+        let answer = world.call(Some(("claude", CLAUDE)), "send_message", arguments);
+        assert_eq!(answer["state"], "queued");
+        let sent = world.codex.0.lock().unwrap().last().unwrap().clone();
+        assert_eq!(sent.operation, Operation::Enqueue);
+        assert!(!sent.text.lines().next().unwrap().contains("current turn"));
+    }
+}
+
+/// A steer's answer is that of the turn it went into, which began before the
+/// send, whether its words carry Agent HUD's label or go as the user's.
+#[test]
+fn get_message_reads_a_steers_answer_from_the_turn_it_went_into() {
+    for as_user in [false, true] {
+        let mut world = World::new(Preferences {
+            enabled: true,
+            as_user,
+            limit: Some(10),
+            ..Default::default()
+        });
+        let turn = "turn-in-progress";
+        world
+            .transcripts
+            .prompt(CODEX, turn, "Build the client against API v1");
+        world.transcripts.reply(CODEX, turn, "Starting on v1");
+        world.live(
+            CODEX,
+            json!({"turnId":turn,"turnStartedAt":"2026-10-21T16:00:00Z","endedAt":null}),
+        );
+        let sent = world.call(
+            Some(("claude", CLAUDE)),
+            "send_message",
+            json!({"to":CODEX,"text":"Stop: the API is v2 now, not v1.","delivery":"steer"}),
+        );
+        assert_eq!(sent["state"], "steered", "{sent}");
+        let delivered = world.codex.0.lock().unwrap().last().unwrap().text.clone();
+        world.transcripts.steered(CODEX, turn, &delivered);
+        world.transcripts.reply(CODEX, turn, "Switched to v2");
+        let running = world.get(&sent["id"]);
+        assert_eq!(running["state"], "started", "as the user: {as_user}");
+        world.live(
+            CODEX,
+            json!({"turnId":turn,"turnStartedAt":"2026-10-21T16:00:00Z","endedAt":"2026-10-21T16:40:00Z"}),
+        );
+        let done = world.get(&sent["id"]);
+        assert_eq!(done["state"], "done", "as the user: {as_user}: {done}");
+        assert_eq!(done["answer"], "Switched to v2");
+    }
+}
+#[test]
+fn stored_get_message_reads_a_steers_answer_from_the_turn_it_went_into() {
+    stored(get_message_reads_a_steers_answer_from_the_turn_it_went_into);
+}
+
+#[test]
+fn a_steer_with_no_turn_in_progress_is_refused_and_never_queued_instead() {
+    let mut world = World::on();
+    world.codex.1.store(true, AtomicOrdering::SeqCst);
+    let answer = world.call(
+        Some(("claude", CLAUDE)),
+        "send_message",
+        json!({"to":CODEX,"text":"Stop: the API is v2 now.","delivery":"steer"}),
+    );
+    assert_eq!(answer["state"], "refused", "{answer}");
+    assert!(answer["reason"]
+        .as_str()
+        .unwrap()
+        .contains("no turn in progress, so nothing was sent"));
+    let sent = world.codex.0.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1, "one attempt, not a queued second");
+    assert_eq!(sent[0].operation, Operation::Steer);
+}
+
+#[test]
+fn a_steer_to_a_client_that_takes_none_is_refused_before_anything_is_sent() {
+    let mut world = World::on();
+    let answer = world.call(
+        Some(("codex", CODEX)),
+        "send_message",
+        json!({"to":CLAUDE,"text":"Stop: the API is v2 now.","delivery":"steer"}),
+    );
+    assert_eq!(answer["state"], "refused");
+    assert!(answer["reason"]
+        .as_str()
+        .unwrap()
+        .contains("Claude Code sessions cannot be steered"));
+    assert!(!world.channel.join(format!("prompts/{CLAUDE}")).exists());
+}
+
+#[test]
+fn list_sessions_says_a_running_codex_with_its_thread_open_can_be_steered() {
+    let mut world = World::on();
+    let codex = listed(&mut world, CODEX);
+    assert_eq!(codex["steerable"], false, "idle");
+    let claude = listed(&mut world, QUIET);
+    assert_eq!(claude["steerable"], false);
+    assert!(claude["steerReason"]
+        .as_str()
+        .unwrap()
+        .contains("cannot be steered"));
+    world.state(CODEX, "running");
+    assert_eq!(
+        listed(&mut world, CODEX)["steerable"],
+        false,
+        "no app has the thread open"
+    );
+    let locks = world.fixture.home().join(".codex/thread-writer-locks");
+    std::fs::create_dir_all(&locks).unwrap();
+    let lock = std::fs::File::create(locks.join(format!("{CODEX}.lock"))).unwrap();
+    lock.lock().unwrap();
+    let codex = listed(&mut world, CODEX);
+    assert_eq!(codex["steerable"], true, "{codex}");
+    assert!(codex["steerReason"]
+        .as_str()
+        .unwrap()
+        .contains("a steer goes into it"));
+}
+
+mod models;
+mod steer;

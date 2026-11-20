@@ -1,12 +1,16 @@
 //! What a HUD writes beside a mark: a window's share, a balance, or the last 24
 //! hours, as src/packages/hud/src/model.ts and format.ts write them.
 use super::*;
+use agent_hud_core::l10n::{self, Language};
 use serde_json::json;
 
 /// Keep native HUD window measurements aligned with model.ts's Dot label.
 pub(super) fn dot_connection_label(snapshot: &Value) -> &'static str {
     let status = &snapshot["connection"]["dot"];
-    let labels = if snapshot["language"] == "zh" {
+    let labels = if snapshot["language"]
+        .as_str()
+        .is_some_and(|language| language.starts_with("zh"))
+    {
         ["已关闭", "正在启动", "连接隧道", "等待 Dot 订阅", "已连接"]
     } else {
         [
@@ -40,7 +44,7 @@ pub fn quota_percent(used: f64, remaining: bool) -> f64 {
     }
 }
 
-/// The number a Simple HUD writes beside a mark: its tightest window (held
+/// The number a Simple HUD writes beside a mark: its chosen window (held
 /// from the last reading when it failed), else its balance, else its last 24
 /// hours (model.ts `meterLabel`).
 pub fn meter_label(vendor: &Vendor, remaining: bool) -> String {
@@ -84,12 +88,11 @@ pub fn recent_label(snapshot: &Value, key: &str) -> Option<String> {
     Some(match shown {
         Some((_, amount)) if amount == 0.0 && unpriced <= 0.0 && costs.len() == 1 => {
             // Calls to a model on this computer cost nothing.
-            if snapshot["language"] == "zh" {
-                "免费"
-            } else {
-                "Free"
-            }
-            .to_owned()
+            let language = snapshot["language"]
+                .as_str()
+                .and_then(Language::from_tag)
+                .unwrap_or_else(l10n::current);
+            l10n::tr_in(language, "Free")
         }
         Some((currency, amount)) => {
             let more = unpriced > 0.0 || costs.len() > 1;
@@ -187,6 +190,14 @@ pub fn money_amount(amount: &Value, code: &str) -> String {
         }
         grouped.push(digit);
     }
+    let sign = if negative && cents > 0 { "-" } else { "" };
+    if code.eq_ignore_ascii_case("credits") {
+        return match cents % 100 {
+            0 => format!("{sign}{grouped}"),
+            rem if rem.is_multiple_of(10) => format!("{sign}{grouped}.{}", rem / 10),
+            rem => format!("{sign}{grouped}.{rem:02}"),
+        };
+    }
     let symbol = match code {
         "USD" | "AUD" | "CAD" | "HKD" | "NZD" | "SGD" | "TWD" | "MXN" => "$",
         "CNY" | "JPY" => "¥",
@@ -196,7 +207,6 @@ pub fn money_amount(amount: &Value, code: &str) -> String {
         "INR" => "₹",
         _ => "",
     };
-    let sign = if negative && cents > 0 { "-" } else { "" };
     let amount = format!("{grouped}.{:02}", cents % 100);
     if symbol.is_empty() {
         format!("{sign}{code}\u{a0}{amount}")
