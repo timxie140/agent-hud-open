@@ -77,7 +77,11 @@ def complete(adapter, message_id, native):
     safe = {'state': native['state'], 'actualReceiptConfirmed': False}
     if isinstance(native.get('deliveryMode'), str):
         safe['deliveryMode'] = native['deliveryMode'][:40]
-    if native.get('reasonCode') in {'pass_limit', 'permission_denied', 'recipient_unavailable'}:
+    if native.get('reasonCode') in {'pass_limit', 'permission_denied', 'recipient_unavailable',
+                                    'desktop_endpoint_unavailable', 'desktop_peer_validation_failed', 'desktop_no_owner',
+                                    'desktop_protocol_unsupported', 'desktop_timeout',
+                                    'desktop_turn_changed', 'desktop_waiting_for_user',
+                                    'codex_wake_requested', 'codex_wake_withheld', 'codex_wake_failed'}:
         safe['reasonCode'] = native['reasonCode']
     with adapter.db() as db:
         db.execute('BEGIN IMMEDIATE')

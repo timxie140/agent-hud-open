@@ -36,6 +36,19 @@ pub trait CodexTransport: Send + Sync {
         request: &SendRequest,
         timeout: Duration,
     ) -> Result<Receipt>;
+    fn steer_ready(&self, data: &Path, thread: &str, _timeout: Duration) -> Result<bool> {
+        Ok(thread_open(data, thread))
+    }
+    fn persisted_input(
+        &self,
+        _data: &Path,
+        _target: &SessionTarget,
+        _request: &str,
+        _fingerprint: &str,
+        _timeout: Duration,
+    ) -> Result<Option<ReceivedInput>> {
+        Ok(None)
+    }
     fn received_input(
         &self,
         _data: &Path,
@@ -75,6 +88,26 @@ impl QueueRoute {
     }
 }
 impl CodexTransport for NativeCodexTransport {
+    fn steer_ready(&self, data: &Path, thread: &str, timeout: Duration) -> Result<bool> {
+        transport::steer_ready(data, thread, timeout)
+    }
+    fn persisted_input(
+        &self,
+        data: &Path,
+        target: &SessionTarget,
+        request: &str,
+        fingerprint: &str,
+        timeout: Duration,
+    ) -> Result<Option<ReceivedInput>> {
+        transport::persisted_input(
+            self.queue.as_ref(),
+            data,
+            target,
+            request,
+            fingerprint,
+            timeout,
+        )
+    }
     fn received_input(
         &self,
         data: &Path,

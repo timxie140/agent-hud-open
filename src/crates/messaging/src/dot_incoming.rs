@@ -10,15 +10,16 @@ impl Messaging {
         let sessions: Vec<Value> = if self.preferences.enabled {
             let loaded = self.loaded();
             let language = language(host.snapshot);
+            let deadline = std::time::Instant::now() + listing::STEER_PROBE_BUDGET;
             sessions(host.snapshot)
                 .filter(|row| row["source"] == "codex")
                 .take(100)
                 .map(|row| {
                     let id = row["id"].as_str().unwrap_or_default();
-                    let (steerable, _) = self.steerable("codex", id, row, &loaded, language);
+                    let (steerable, reason) = self.steerable("codex", id, row, &loaded, language, deadline);
                     json!({"id":row["id"],"client":"codex","title":row["title"],
                         "state":match state(row) { "running" => "running", "waitingForApproval" => "waiting", _ => "idle" },
-                        "steerable":steerable})
+                        "steerable":steerable,"steerReason":reason})
                 }).collect()
         } else {
             Vec::new()
@@ -148,7 +149,11 @@ impl Messaging {
                     "uncertain" => "uncertain",
                     _ => "accepted",
                 };
-                (state, json!({"state":native,"deliveryMode":receipt.state}))
+                let mut result = json!({"state":native,"deliveryMode":receipt.state});
+                if let Some(code) = codex_delivery_reason(receipt.reason.as_deref()) {
+                    result["reasonCode"] = json!(code);
+                }
+                (state, result)
             }
             Err(delivery::Failure::Rejected(_))
             | Err(delivery::Failure::Unsupported(_))
@@ -184,7 +189,7 @@ impl Messaging {
             cursor: None,
             fingerprint: transcript::fingerprint(&delivered),
             state: state.into(),
-            reason: None,
+            reason: receipt.as_ref().ok().and_then(|row| row.reason.clone()),
             turn: None,
             answered: false,
             replied_by: None,
@@ -252,6 +257,35 @@ impl Messaging {
             "complete",
             json!({"id":id,"native":{"state":"refused","reasonCode":reason}}),
         );
+    }
+}
+
+fn codex_delivery_reason(reason: Option<&str>) -> Option<&'static str> {
+    let reason = reason?;
+    if reason.starts_with("Unavailable(\"Codex Desktop endpoint unavailable") {
+        Some("desktop_endpoint_unavailable")
+    } else if reason.starts_with("Unavailable(\"Codex Desktop peer validation failed") {
+        Some("desktop_peer_validation_failed")
+    } else if reason.starts_with("Unavailable(\"No active Codex Desktop owner") {
+        Some("desktop_no_owner")
+    } else if reason.starts_with("Protocol(\"Desktop") {
+        Some("desktop_protocol_unsupported")
+    } else if reason == "TimedOut" {
+        Some("desktop_timeout")
+    } else if reason.contains(delivery::NO_TURN_TO_STEER)
+        || reason.contains("Desktop no longer owns the expected active turn")
+    {
+        Some("desktop_turn_changed")
+    } else if reason.contains("Desktop turn waits for the user") {
+        Some("desktop_waiting_for_user")
+    } else if reason.starts_with("Queued; native Codex wake requested") {
+        Some("codex_wake_requested")
+    } else if reason.starts_with("Queued; native wake withheld") {
+        Some("codex_wake_withheld")
+    } else if reason.starts_with("Queued; native wake request failed") {
+        Some("codex_wake_failed")
+    } else {
+        None
     }
 }
 

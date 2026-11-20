@@ -10,6 +10,12 @@ impl From<IpcError> for Failure {
     fn from(value: IpcError) -> Self {
         match value {
             IpcError::Unavailable => Self::Unavailable("Native owner socket".into()),
+            IpcError::Endpoint(code) => Self::Unavailable(format!(
+                "Codex Desktop endpoint unavailable (Windows error {code})"
+            )),
+            IpcError::PeerValidation(code) => Self::Unavailable(format!(
+                "Codex Desktop peer validation failed (Windows error {code})"
+            )),
             IpcError::TimedOut => Self::TimedOut,
             IpcError::Protocol => Self::Protocol("Desktop IPC".into()),
             IpcError::Rejected(reason) => Self::Rejected(reason),
@@ -121,6 +127,9 @@ pub(super) fn deliver_on(
     } else {
         if request.operation == Operation::Steer {
             let state = desktop_snapshot(connection, &client, &owner, thread)?;
+            if turn_waits_on_user(&state) {
+                return Err(Failure::Rejected("Desktop turn waits for the user".into()));
+            }
             let current = super::current_desktop_turn(&state)?
                 .filter(|(_, status)| status == "inProgress")
                 .map(|(turn, _)| turn);
@@ -249,6 +258,19 @@ pub(super) fn owned_snapshot(
         .ok_or_else(|| Failure::Protocol("Desktop owner identity".into()))?
         .to_owned();
     desktop_snapshot(&mut connection, &client, &owner, thread).map(Some)
+}
+
+pub(super) fn turn_waits_on_user(state: &Value) -> bool {
+    state["threadRuntimeStatus"]["activeFlags"]
+        .as_array()
+        .is_some_and(|flags| {
+            flags.iter().any(|flag| {
+                matches!(
+                    flag.as_str(),
+                    Some("waitingOnApproval" | "waitingOnUserInput")
+                )
+            })
+        })
 }
 
 pub(super) fn desktop_snapshot(

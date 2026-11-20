@@ -171,6 +171,7 @@ impl LocalClients {
         session: &str,
         request: &str,
         fingerprint: &str,
+        inspect_persisted: bool,
     ) -> Result<Option<ReceivedInput>> {
         let Some(receipt) = self.receipt(Provider::Codex, session, request)? else {
             return Ok(None);
@@ -195,12 +196,30 @@ impl LocalClients {
         let Some(target) = target else {
             return Ok(None);
         };
-        self.codex.received_input(
+        let owner = self.codex.received_input(
             &self.paths.codex_data,
             &target,
             request,
             fingerprint,
             self.timeout.min(Duration::from_millis(500)),
+        );
+        if !inspect_persisted || matches!(owner, Ok(Some(_))) {
+            return owner;
+        }
+        self.codex.persisted_input(
+            &self.paths.codex_data,
+            &target,
+            request,
+            fingerprint,
+            self.timeout.min(Duration::from_secs(1)),
+        )
+    }
+
+    pub fn codex_steer_ready(&self, thread: &str, remaining: Duration) -> Result<bool> {
+        self.codex.steer_ready(
+            &self.paths.codex_data,
+            thread,
+            self.timeout.min(Duration::from_millis(150)).min(remaining),
         )
     }
     pub fn cancel(

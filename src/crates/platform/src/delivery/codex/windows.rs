@@ -4,8 +4,22 @@
 //! interrupted.
 use super::*;
 
+#[path = "windows/persisted.rs"]
+mod persisted;
 #[path = "windows/queue_wake.rs"]
 mod queue_wake;
+pub(super) use persisted::persisted_input;
+
+pub(super) fn steer_ready(data: &Path, thread: &str, timeout: Duration) -> Result<bool> {
+    if !valid_uuid(thread) || !super::thread_open(data, thread) {
+        return Ok(false);
+    }
+    let Some(state) = super::desktop::owned_snapshot(data, thread, timeout)? else {
+        return Ok(false);
+    };
+    Ok(!super::desktop::turn_waits_on_user(&state)
+        && super::current_desktop_turn(&state)?.is_some_and(|(_, status)| status == "inProgress"))
+}
 
 /// Agent HUD sends to Codex on this host.
 pub(crate) const SUPPORTED: bool = true;
@@ -49,12 +63,7 @@ pub(super) fn deliver(
     }
     let route = queue.ok_or_else(|| Failure::Unavailable("Codex executable".into()))?;
     let message_id = format!("agent-hud:{}", request.request_id);
-    let reason = if request.operation == Operation::SteerOrEnqueue {
-        queue_wake::enqueue(route, data, thread, &request.text, &message_id, timeout)?
-    } else {
-        enqueue_stdio(route, data, thread, &request.text, &message_id, timeout)?;
-        "Queued until Codex opens the thread"
-    };
+    let reason = queue_wake::enqueue(route, data, thread, &request.text, &message_id, timeout)?;
     Ok(Receipt {
         provider: Provider::Codex,
         session_id: target.session_id.clone(),

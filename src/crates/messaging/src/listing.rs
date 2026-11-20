@@ -1,5 +1,8 @@
 //! `list_sessions`: the sessions a message can go to, and which take one now.
 use super::*;
+use std::time::{Duration, Instant};
+
+pub(super) const STEER_PROBE_BUDGET: Duration = Duration::from_millis(600);
 
 impl Messaging {
     /// The Claude Code and DeepSeek Harness sessions whose plugin checked in
@@ -18,6 +21,7 @@ impl Messaging {
     pub(crate) fn list(&self, caller: Option<&Caller>, host: &Host<'_>) -> Value {
         let language = language(host.snapshot);
         let loaded = self.loaded();
+        let deadline = Instant::now() + STEER_PROBE_BUDGET;
         let mut rows = sessions(host.snapshot)
             .map(|session| {
                 let id = session["id"].as_str().unwrap_or_default();
@@ -25,7 +29,7 @@ impl Messaging {
                 let (reachable, reason) =
                     self.reachable(client, id, &loaded, (session, host.snapshot), language);
                 let (steerable, steer_reason) =
-                    self.steerable(client, id, session, &loaded, language);
+                    self.steerable(client, id, session, &loaded, language, deadline);
                 json!({
                     "id": id,
                     "client": client,
@@ -92,6 +96,7 @@ impl Messaging {
         session: &Value,
         loaded: &std::collections::BTreeSet<String>,
         language: Language,
+        deadline: Instant,
     ) -> (bool, String) {
         let Some(provider) = Provider::parse(client).filter(|p| p.takes_steer()) else {
             return (false, words::steer_unsupported(language, client));
@@ -102,7 +107,15 @@ impl Messaging {
             _ => {}
         }
         let open = match provider {
-            Provider::Codex => delivery::codex_thread_open(&self.places.codex_data, id),
+            Provider::Codex => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero()
+                    || !matches!(self.clients.codex_steer_ready(id, remaining), Ok(true))
+                {
+                    return (false, words::steer_unverified(language));
+                }
+                true
+            }
             _ => {
                 self.preferences.deepseek
                     && loaded.contains(id)
