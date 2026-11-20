@@ -6,6 +6,10 @@ use std::{
     process::{Child, ChildStderr, ChildStdout},
 };
 
+#[path = "windows/codex_runtime.rs"]
+mod codex_runtime;
+pub(super) use codex_runtime::spawn_codex;
+
 /// Windows pipes stay blocking: `drain` reads only what is already there.
 pub(super) fn prepare(
     _child: &mut Child,
@@ -14,6 +18,10 @@ pub(super) fn prepare(
 ) -> Result<()> {
     Ok(())
 }
+
+/// A launched client is in no job of the app's, so it outlives the app as
+/// it is.
+pub(super) fn detach(_command: &mut std::process::Command) {}
 
 /// A temporary app-server may be launched by an npm cmd/Node shim. Closing its
 /// job terminates the shim and descendants; killing only Child would leave the
@@ -116,6 +124,7 @@ mod tests {
             io::{AsRawHandle, FromRawHandle, OwnedHandle},
             process::CommandExt,
         };
+        use std::process::Command;
         use windows_sys::Win32::{
             Foundation::WAIT_OBJECT_0,
             System::Threading::{

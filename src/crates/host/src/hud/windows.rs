@@ -7,11 +7,17 @@ pub(super) use super::generic::{
 use super::PointerKeys;
 #[path = "windows/displays.rs"]
 mod displays;
+#[path = "windows/page.rs"]
+mod page;
 pub(super) use displays::{measure_screens, screen};
+pub(super) use page::watch_page;
 
 /// Windows reports global physical desktop pixels, with a per-window DPI scale.
 pub(super) const GLOBAL_POINTS: bool = false;
 pub(super) const COORDINATE_SPACE: &str = "monitor-scaled-physical-top-left";
+/// The taskbar is a topmost window too: whichever was clicked last draws on top,
+/// so an edge HUD rests beside it, inside the work area, never under it.
+pub(super) const DOCK_IN_WORK_AREA: bool = true;
 
 pub(super) fn native_drag() -> bool {
     true
@@ -148,16 +154,5 @@ pub(super) fn pointer_keys() -> PointerKeys {
         ctrl: Some(key_down(0x11)),
         meta: Some(key_down(0x5b) || key_down(0x5c)),
         shift: Some(key_down(0x10)),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn swapped_mouse_buttons_preserve_primary_and_secondary_semantics() {
-        assert_eq!(logical_mouse_buttons(false), (0x01, 0x02));
-        assert_eq!(logical_mouse_buttons(true), (0x02, 0x01));
     }
 }

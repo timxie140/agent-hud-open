@@ -8,18 +8,17 @@ export function dotConnectionLabel(
         "enabled" | "running" | "ready" | "subscribed"
       >
     | undefined,
-  language: "en" | "zh",
+  language: string,
 ): string {
-  const labels =
-    language === "zh"
-      ? ["已关闭", "正在启动", "连接隧道", "等待 Dot 订阅", "已连接"]
-      : [
-          "Off",
-          "Starting",
-          "Connecting",
-          "Awaiting Dot subscription",
-          "Connected",
-        ];
+  const labels = language.startsWith("zh")
+    ? ["已关闭", "正在启动", "连接隧道", "等待 Dot 订阅", "已连接"]
+    : [
+        "Off",
+        "Starting",
+        "Connecting",
+        "Awaiting Dot subscription",
+        "Connected",
+      ];
   return labels[
     !status?.enabled
       ? 0

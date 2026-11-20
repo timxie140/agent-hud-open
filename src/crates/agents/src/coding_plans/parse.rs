@@ -1,13 +1,11 @@
 //! What each plan's usage service answers: Kimi Code's usages, OpenCode Go's
 //! usage and the GLM Coding Plan's quota limits, as quota windows.
+mod glm;
+
 use super::{numeric, Credential};
 use crate::account::status;
-use crate::l10n;
-use crate::naming::{
-    vendor_windows::{glm_name, kimi_name},
-    window_names::Period,
-};
-use crate::transcript::metering::date_ms;
+use crate::l10n::tr;
+use crate::naming::{vendor_windows::kimi_name, window_names::Period};
 use serde_json::{json, Value};
 
 fn date(value: &Value) -> Value {
@@ -92,29 +90,18 @@ pub(super) fn parse(
                 }
                 for value in root["limits"].as_array().into_iter().flatten() {
                     let spec = &value["window"];
-                    let count =
-                        numeric(&spec["duration"])
-                            .filter(|n| *n > 0.0)
-                            .ok_or_else(|| {
-                                l10n::text(
-                                    "Kimi 额度窗口缺少时长",
-                                    "Kimi quota window has no duration",
-                                )
-                            })?;
-                    let unit = spec["timeUnit"].as_str().ok_or_else(|| {
-                        l10n::text("Kimi 额度窗口缺少单位", "Kimi quota window has no unit")
-                    })?;
+                    let count = numeric(&spec["duration"])
+                        .filter(|n| *n > 0.0)
+                        .ok_or_else(|| tr!("Kimi quota window has no duration"))?;
+                    let unit = spec["timeUnit"]
+                        .as_str()
+                        .ok_or_else(|| tr!("Kimi quota window has no unit"))?;
                     let multiplier = match unit {
                         "TIME_UNIT_MINUTE" => 60.0,
                         "TIME_UNIT_HOUR" => 3600.0,
                         "TIME_UNIT_DAY" => 86400.0,
                         "TIME_UNIT_WEEK" => 604800.0,
-                        _ => {
-                            return Err(l10n::text(
-                                "Kimi 额度窗口的单位无法识别",
-                                "Kimi quota window unit is unsupported",
-                            ))
-                        }
+                        _ => return Err(tr!("Kimi quota window unit is unsupported")),
                     };
                     old.push((
                         format!("limit:{unit}:{count:.1}"),
@@ -125,14 +112,10 @@ pub(super) fn parse(
                 for (key, duration, value) in old {
                     let limit = numeric(&value["limit"])
                         .filter(|n| *n > 0.0)
-                        .ok_or_else(|| {
-                            l10n::text("Kimi 未提供额度总量", "Kimi quota capacity is unavailable")
-                        })?;
+                        .ok_or_else(|| tr!("Kimi quota capacity is unavailable"))?;
                     let used = numeric(&value["used"])
                         .or_else(|| numeric(&value["remaining"]).map(|n| (limit - n).max(0.0)))
-                        .ok_or_else(|| {
-                            l10n::text("Kimi 未提供已用额度", "Kimi quota usage is unavailable")
-                        })?;
+                        .ok_or_else(|| tr!("Kimi quota usage is unavailable"))?;
                     add(
                         key,
                         kimi_name(Period::from_seconds(Some(duration))),
@@ -147,10 +130,7 @@ pub(super) fn parse(
         }
         "opencode" => {
             if !root["usage"].is_object() {
-                return Err(l10n::text(
-                    "OpenCode Go 返回的额度格式无法识别",
-                    "OpenCode Go returned an unsupported quota format",
-                ));
+                return Err(tr!("OpenCode Go returned an unsupported quota format"));
             }
             for key in ["rolling", "weekly", "monthly"] {
                 let value = &root["usage"][key];
@@ -172,12 +152,8 @@ pub(super) fn parse(
                 add(
                     key.into(),
                     name,
-                    numeric(&value["percent"]).ok_or_else(|| {
-                        l10n::text(
-                            "OpenCode Go 未提供额度比例",
-                            "OpenCode Go quota percentage is unavailable",
-                        )
-                    })?,
+                    numeric(&value["percent"])
+                        .ok_or_else(|| tr!("OpenCode Go quota percentage is unavailable"))?,
                     date(&value["resetsAt"]),
                     duration,
                     true,
@@ -185,128 +161,38 @@ pub(super) fn parse(
                 );
             }
         }
-        "glm" => {
-            if root["success"] != true || numeric(&root["code"]) != Some(200.0) {
-                return Err(l10n::text(
-                    "GLM 返回的额度格式无法识别",
-                    "GLM returned an unsupported quota format",
-                ));
-            }
-            let mut found = Vec::new();
-            for value in root["data"]["limits"].as_array().ok_or_else(|| {
-                l10n::text("GLM 未提供额度窗口", "GLM quota windows are unavailable")
-            })? {
-                let Some(kind) = value["type"]
-                    .as_str()
-                    .filter(|s| matches!(*s, "TOKENS_LIMIT" | "CREDIT_LIMIT" | "TIME_LIMIT"))
-                else {
-                    continue;
-                };
-                let unit = value["unit"].as_i64().ok_or_else(|| {
-                    l10n::text(
-                        "GLM 额度窗口缺少单位",
-                        "GLM quota window unit is unavailable",
-                    )
-                })?;
-                let count = numeric(&value["number"]).ok_or_else(|| {
-                    l10n::text(
-                        "GLM 额度窗口缺少时长",
-                        "GLM quota window duration is unavailable",
-                    )
-                })?;
-                let mut used = numeric(&value["percentage"]).ok_or_else(|| {
-                    l10n::text("GLM 未提供额度比例", "GLM quota percentage is unavailable")
-                })?;
-                let capacity = numeric(&value["usage"]);
-                let current = numeric(&value["currentValue"]);
-                if let Some(capacity) = capacity.filter(|n| *n > 0.0) {
-                    if let Some(count) = numeric(&value["remaining"])
-                        .map(|n| (capacity - n).max(current.unwrap_or(0.0)))
-                        .or(current)
-                    {
-                        used = count / capacity * 100.0;
-                    }
-                }
-                let duration = match unit {
-                    1 => Some(86400.0 * count),
-                    3 => Some(3600.0 * count),
-                    5 => Some(60.0 * count),
-                    6 => Some(604800.0 * count),
-                    _ => None,
-                };
-                let monthly = kind == "TIME_LIMIT" && unit == 5 && count == 1.0;
-                let duration = if monthly { None } else { duration };
-                let mut reset = numeric(&value["nextResetTime"])
-                    .and_then(|n| chrono::DateTime::<chrono::Utc>::from_timestamp_millis(n as i64))
-                    .map(|d| json!(d.to_rfc3339()))
-                    .unwrap_or(Value::Null);
-                if kind != "TIME_LIMIT"
-                    && duration == Some(18000.0)
-                    && reset
-                        .as_str()
-                        .and_then(date_ms)
-                        .is_some_and(|at| at > chrono::Utc::now().timestamp_millis() + 18_060_000)
-                {
-                    reset = Value::Null;
-                }
-                let native_unit = match kind {
-                    "CREDIT_LIMIT" => "credits",
-                    "TIME_LIMIT" => "calls",
-                    _ => "tokens",
-                };
-                found.push((
-                    format!("{kind}:{unit}:{count}"),
-                    kind,
-                    glm_name(kind, Period::from_seconds(duration), monthly),
-                    used,
-                    reset,
-                    duration,
-                    current.map(|used| (used.round(), capacity.map(f64::round), native_unit)),
-                ));
-            }
-            // Token limits and credits of the same length, which an account
-            // does not normally have both of, are told apart by their unit.
-            let shorts = found
-                .iter()
-                .map(|window| window.2 .1.clone())
-                .collect::<Vec<_>>();
-            for (key, kind, mut name, used, reset, duration, native) in found {
-                if shorts.iter().filter(|short| **short == name.1).count() > 1
-                    && kind != "TIME_LIMIT"
-                {
-                    if let Some(period) = Period::from_seconds(duration) {
-                        let unit = if kind == "CREDIT_LIMIT" {
-                            "Credits"
-                        } else {
-                            "Tokens"
-                        };
-                        name.1 = format!("{unit} {}", period.after_word());
-                    }
-                }
-                // The MCP window limits tool calls, not the plan's models.
-                add(
-                    key,
-                    name,
-                    used,
-                    reset,
-                    duration,
-                    kind != "TIME_LIMIT",
-                    native,
-                );
-            }
-        }
+        "glm" | "zcode" => glm::windows(root, &mut add)?,
         _ => unreachable!(),
     }
     if windows.is_empty() {
-        return Err(l10n::text(
-            "Coding Plan 没有返回可核实的额度窗口",
-            "Coding plan did not return a verifiable quota window",
-        ));
+        return Err(tr!("Coding plan did not return a verifiable quota window"));
     }
     for row in &mut windows {
         link(row, entry);
     }
     Ok((windows, plan))
+}
+
+/// A Kimi Code account as its profile names it (`/me`, which Kimi Code's own
+/// account panel reads): the person's email, else nickname, and the name of
+/// their membership level. Without a profile, the plan the usage answer
+/// named (`membership.level`, which older answers carry) names both.
+pub(super) fn kimi_account(
+    profile: &Value,
+    plan: Option<String>,
+) -> (Option<String>, Option<String>) {
+    let field = |key: &str| {
+        profile[key]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    let plan = field("user_level_name").or(plan);
+    let label = field("email")
+        .or_else(|| field("nickname"))
+        .or_else(|| plan.clone());
+    (label, plan)
 }
 
 /// The logged calls that spend a plan: those through its own provider ids,
@@ -320,13 +206,15 @@ pub(super) fn link(row: &mut Value, entry: &Credential) {
             &["kimi-code", "kimi-for-coding", "kimi-coding"],
             Some("kimi"),
         ),
-        "glm" if china => (&["zhipuai-coding-plan", "pi#zai-coding-cn"], Some("glm")),
-        "glm" => (&["zai-coding-plan", "pi#zai"], Some("glm")),
+        "glm" | "zcode" if china => (&["zhipuai-coding-plan", "pi#zai-coding-cn"], Some("glm")),
+        "glm" | "zcode" => (&["zai-coding-plan", "pi#zai"], Some("glm")),
         "opencode" => (&["opencode-go"], None),
         _ => return,
     };
     row["consumerRoutes"] = json!(routes);
-    if let Some(family) = family.filter(|_| entry.clients.contains("Claude")) {
+    if entry.provider == "zcode" {
+        row["consumerSource"] = json!("zcode");
+    } else if let Some(family) = family.filter(|_| entry.clients.contains("Claude")) {
         row["consumerSource"] = json!("claude");
         if row["allModels"] == true {
             row["modelFamilies"] = json!([family]);

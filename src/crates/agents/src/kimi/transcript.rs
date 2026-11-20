@@ -1,4 +1,8 @@
 //! Kimi JSONL session & child-session reducer.
+mod items;
+
+pub use items::ITEMS;
+
 use crate::transcript::live::{Activity, Call, Work};
 use crate::transcript::{at, n, text};
 use crate::{Log, Usage};
@@ -39,6 +43,19 @@ impl Log {
         }
         let kind = text(&v["type"]).unwrap_or("");
         if modern {
+            if kind == "profile.bind" && self.cwd.is_none() {
+                if let Some(cwd) = text(&v["environmentDisclosure"]["cwd"]) {
+                    self.cwd = Some(cwd.to_owned());
+                }
+            } else if kind == "turn.prompt" && agent == "main" {
+                let prompt = v["input"]
+                    .as_array()
+                    .and_then(|items| items.iter().find_map(|item| text(&item["text"])))
+                    .or_else(|| text(&v["input"]));
+                if let Some(prompt) = prompt {
+                    self.naming.prompt(prompt);
+                }
+            }
             if kind == "llm.request" {
                 if let Some(model) = text(&v["model"]).filter(|s| !s.starts_with("__")) {
                     self.model = model.into();
@@ -53,7 +70,17 @@ impl Log {
                 if matches!(kind, "interaction.request" | "interaction.resolved") {
                     self.kimi_interaction(v, at);
                 }
-                if kind == "context.append_loop_event" && agent == "main" {
+                // A turn starts at its prompt, which Kimi Code (2.5 on) writes
+                // with the turn's id before the turn's first step, so the
+                // prompt is that turn's, not the one before, as `TURNS`
+                // pages it. Each agent's wire is its own, so a sub-agent's
+                // turns are its own too.
+                if kind == "turn.prompt" {
+                    if let Some(turn) = turn_id(&v["turnId"]) {
+                        self.live.observe_source(&turn, true, Some(at), at, None);
+                    }
+                }
+                if kind == "context.append_loop_event" {
                     let e = &v["event"];
                     if let Some(turn) = text(&e["turnId"]) {
                         if e["type"] == "step.begin" {
@@ -63,12 +90,8 @@ impl Log {
                         }
                     }
                 }
-                if kind == "turn.ended" && agent == "main" {
-                    let id = v["turnId"]
-                        .as_i64()
-                        .map(|n| n.to_string())
-                        .or_else(|| text(&v["turnId"]).map(str::to_owned));
-                    if let Some(id) = id {
+                if kind == "turn.ended" {
+                    if let Some(id) = turn_id(&v["turnId"]) {
                         let outcome = if !v["error"].is_null() {
                             Some("failed")
                         } else if v["reason"] == "completed" {
@@ -169,20 +192,41 @@ impl Log {
     }
 }
 
-/// A Kimi turn starts at the loop's `step.begin` event.
+/// A Kimi turn starts at `turn.prompt` or the loop's `step.begin` event.
 pub static TURNS: crate::transcript::turns::Turns = crate::transcript::turns::Turns {
     start: |value| {
+        if value["type"] == "turn.prompt" {
+            return Some(crate::transcript::turns::TurnStart::whole(
+                turn_id(&value["turnId"]),
+                value.get("time"),
+            ));
+        }
         if value["type"] != "context.append_loop_event" || value["event"]["type"] != "step.begin" {
             return None;
         }
         let id = value["event"]["turnId"].as_str()?;
-        Some(crate::transcript::turns::TurnStart::whole(
-            Some(id.to_owned()),
-            value.get("time"),
-        ))
+        Some(crate::transcript::turns::TurnStart {
+            turn: Some(id.to_owned()),
+            started: (value["event"]["step"].as_i64().unwrap_or(1) <= 1)
+                .then(|| value.get("time").cloned())
+                .flatten(),
+            whole: false,
+        })
     },
-    may_name: |line| crate::transcript::turns::has(line, b"step.begin"),
+    may_name: |line| {
+        crate::transcript::turns::has(line, b"turn.prompt")
+            || crate::transcript::turns::has(line, b"step.begin")
+    },
 };
+
+/// A turn's id as Kimi writes it: a number on `turn.*` lines, a string in
+/// loop events.
+fn turn_id(value: &Value) -> Option<String> {
+    value
+        .as_i64()
+        .map(|n| n.to_string())
+        .or_else(|| value.as_str().map(str::to_owned))
+}
 
 #[cfg(test)]
 mod tests {
@@ -227,6 +271,152 @@ mod tests {
         assert_eq!(after(11), ("waiting", vec!["question".to_owned()]));
         // The turn's end settles what it left asking.
         assert_eq!(after(12), ("idle", vec![]));
+    }
+
+    /// A Kimi Code session as its `state.json` and first prompt leave it.
+    fn kept(state: &str) -> Log {
+        let temp = tempfile::tempdir().unwrap();
+        let session = temp
+            .path()
+            .join(".kimi-code/sessions/wd_app_1/session_9f2a");
+        std::fs::create_dir_all(session.join("agents/main")).unwrap(); // plain directory
+        std::fs::write(session.join("state.json"), state).unwrap();
+        let mut log = Log::new(session.join("agents/main/wire.jsonl"), "kimi");
+        log.read_kept_name();
+        log.parse(&serde_json::json!({"type":"turn.prompt","agentId":"main","input":[{"type":"text","text":"fix the login form"}],"origin":{"kind":"user"},"promptId":"msg_1","turnId":0,"time":T0}));
+        log
+    }
+
+    #[test]
+    fn a_session_is_titled_and_archived_as_kimi_keeps_it() {
+        // Kimi Code 2.5.2's state.json: a generated title or a `/title`
+        // rename (`isCustomTitle`) replaces the first prompt, as
+        // `kimi session list` shows it.
+        let log = kept(
+            r#"{"id":"session_9f2a","version":2,"cwd":"/w/app","archived":false,"title":"Login form fix","titleKind":"generated","isCustomTitle":false,"lastPrompt":"fix the login form"}"#,
+        );
+        assert_eq!(log.title(), "Login form fix");
+        assert!(!log.archived);
+        assert_eq!(log.cwd.as_deref(), Some("/w/app"));
+        let log = kept(
+            r#"{"id":"session_9f2a","version":2,"cwd":"/w/app","archived":true,"archivedAt":1792470009000,"title":"Mine","titleKind":"custom","isCustomTitle":true}"#,
+        );
+        assert_eq!(log.title(), "Mine");
+        assert!(log.archived, "an archived session is not listed");
+        // A session Kimi has not titled yet takes its first prompt.
+        let log = kept(r#"{"id":"session_9f2a","version":2,"archived":false}"#);
+        assert_eq!(log.title(), "fix the login form");
+    }
+
+    /// A conversation as Kimi writes it for `agent`: a prompt, the message a
+    /// Stop hook hands Kimi to carry on with, then a turn the user steers.
+    fn conversation(agent: &str) -> Vec<Value> {
+        include_str!("../../tests/fixtures/kimi/macos/conversation-wire.jsonl")
+            .lines()
+            .map(|line| {
+                let mut value: Value = serde_json::from_str(line).unwrap();
+                if value.get("agentId").is_some() {
+                    value["agentId"] = agent.into();
+                }
+                value
+            })
+            .collect()
+    }
+
+    /// Each row a log of `agent` shows, with the turn it is read into: the
+    /// turn the log is in once its line is read, as the conversation store
+    /// takes it (`conversation_collect`).
+    fn rows(agent: &str) -> (Log, Vec<(String, String, bool, String)>) {
+        let mut log = Log::new(
+            format!("sessions/wd_project/session_7d1e/agents/{agent}/wire.jsonl").into(),
+            "kimi",
+        );
+        let mut rows = Vec::new();
+        for (offset, line) in conversation(agent).iter().enumerate() {
+            log.parse(line);
+            let turn = log.live.turns.back().and_then(|turn| turn.id.clone());
+            for item in (super::ITEMS.read)(line, offset as u64) {
+                rows.push((
+                    turn.clone().unwrap_or_default(),
+                    item.role.as_str().to_owned(),
+                    item.is_prompt,
+                    item.text.unwrap_or_default(),
+                ));
+            }
+        }
+        (log, rows)
+    }
+
+    fn row(turn: &str, role: &str, prompt: bool, text: &str) -> (String, String, bool, String) {
+        (turn.into(), role.into(), prompt, text.into())
+    }
+
+    #[test]
+    fn prompts_steers_and_stop_hook_messages_are_prompts_of_their_turn() {
+        let (log, shown) = rows("main");
+        assert_eq!(
+            shown,
+            [
+                row("0", "user", true, "check the build"),
+                row("0", "assistant", false, "The build passes."),
+                // Agent HUD delivers another agent's message through Kimi's
+                // Stop hook; Kimi carries on with it in the same turn.
+                row(
+                    "0",
+                    "user",
+                    true,
+                    "[Agent HUD · from Codex · fix login · m-7]\n\nCan you also run the tests?"
+                ),
+                row("0", "assistant", false, "The tests pass too."),
+                // The prompt starts its own turn, not the one before.
+                row("1", "user", true, "now clean up"),
+                row("1", "user", true, "keep the cache"),
+                row("1", "assistant", false, "Cleaned, cache kept."),
+            ],
+            "Kimi's copies of prompts in its context and its reminders are no rows"
+        );
+        let turns = log
+            .live
+            .turns
+            .iter()
+            .map(|turn| (turn.id.clone(), turn.started, turn.running));
+        assert_eq!(
+            turns.collect::<Vec<_>>(),
+            [
+                (Some("0".into()), Some(T0 + 10), false),
+                (Some("1".into()), Some(T0 + 10_000), false)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sub_agent_log_shows_its_own_rows_and_turns() {
+        let (log, rows) = rows("agent_3f");
+        assert_eq!(log.id, "kimi:session_7d1e:agent_3f");
+        assert_eq!(
+            log.live.parent_id.as_deref(),
+            Some("kimi:session_7d1e:main")
+        );
+        assert_eq!(rows.len(), 7);
+        assert_eq!(rows[0], row("0", "user", true, "check the build"));
+        assert_eq!(log.live.turns.len(), 2);
+    }
+
+    #[test]
+    fn a_sub_agents_task_is_its_prompt_and_a_goal_continuation_is_not() {
+        let line = |origin: Value| {
+            let value = serde_json::json!({"type":"turn.prompt","agentId":"agent_3f","input":[{"type":"text","text":"look"}],"origin":origin,"turnId":0,"time":T0});
+            (super::ITEMS.read)(&value, 0)[0].is_prompt
+        };
+        assert!(line(
+            serde_json::json!({"kind":"system_trigger","name":"subagent"})
+        ));
+        assert!(!line(
+            serde_json::json!({"kind":"system_trigger","name":"goal_continuation"})
+        ));
+        assert!(!line(
+            serde_json::json!({"kind":"system_trigger","name":"imported_orphan"})
+        ));
     }
 
     #[test]

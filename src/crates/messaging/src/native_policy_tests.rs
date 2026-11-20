@@ -1,8 +1,8 @@
-//! Native DSH sends and replies use the verified Codex delivery policy.
+//! Native DSH sends and replies follow the explicit queue or steer policy.
 use super::*;
 
 #[test]
-fn dsh_to_codex_uses_fresh_client_state_for_steer_or_queue() {
+fn dsh_to_codex_defaults_to_queue_for_each_state() {
     for state in ["running", "idle", "waitingForApproval"] {
         let mut world = World::on();
         world.harness();
@@ -11,14 +11,14 @@ fn dsh_to_codex_uses_fresh_client_state_for_steer_or_queue() {
         assert_ne!(result["state"], "refused");
         let sent = world.codex.0.lock().unwrap();
         assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].operation, Operation::SteerOrEnqueue);
+        assert_eq!(sent[0].operation, Operation::Enqueue);
         assert_eq!(sent[0].request_id, result["id"]);
         assert!(sent[0].text.contains("from DeepSeek Harness"));
     }
 }
 
 #[test]
-fn dsh_reply_to_codex_keeps_recipient_identity_and_uses_steer_or_queue() {
+fn dsh_reply_to_codex_keeps_recipient_identity_and_queues() {
     let mut world = World::on();
     world.harness();
     world.harness_session(HARNESS_TWO, HARNESS_TWO_OWN, "Another DSH");
@@ -39,7 +39,7 @@ fn dsh_reply_to_codex_keeps_recipient_identity_and_uses_steer_or_queue() {
     assert_ne!(reply["state"], "refused");
     let sent = world.codex.0.lock().unwrap();
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].operation, Operation::SteerOrEnqueue);
+    assert_eq!(sent[0].operation, Operation::Enqueue);
     assert_eq!(sent[0].request_id, reply["id"]);
     assert!(sent[0].text.contains(parent["id"].as_str().unwrap()));
     drop(sent);

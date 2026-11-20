@@ -21,6 +21,7 @@ pub mod process;
 pub mod protobuf;
 pub mod relays;
 pub mod replies;
+pub mod split;
 pub mod sqlite;
 pub mod transcript;
 
@@ -57,6 +58,7 @@ pub mod grok;
 pub mod hermes;
 pub mod kimi;
 pub mod minimax;
+pub mod minimax_code;
 pub mod openclaw;
 pub mod opencode;
 pub mod pi;
@@ -94,7 +96,12 @@ pub const COMPLETION_SOURCES: &[&str] = &[
     "antigravity",
     "cursor",
     "copilot",
+    "qoder",
+    "qoder-cn",
+    "qoder-work",
     "codebuddy",
+    "workbuddy",
+    "zcode",
     "qwen",
     "devin",
     "hermes",
@@ -102,6 +109,7 @@ pub const COMPLETION_SOURCES: &[&str] = &[
     "goose",
     "trae",
     "trae-cn",
+    "kimi",
 ];
 pub const HOOK_FLAGS: &[&str] = &[
     "--permission-hook",
@@ -109,6 +117,7 @@ pub const HOOK_FLAGS: &[&str] = &[
     "--attention-hook",
     "--session-origin-hook",
     "--compaction-hook",
+    "--rewake-hook",
 ];
 
 pub fn iso(at: i64) -> Option<String> {

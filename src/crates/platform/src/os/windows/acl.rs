@@ -7,17 +7,17 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, GetLastError, LocalFree, ERROR_ALREADY_EXISTS, GENERIC_READ, GENERIC_WRITE,
-        HANDLE, INVALID_HANDLE_VALUE,
+        CloseHandle, LocalFree, ERROR_ALREADY_EXISTS, GENERIC_READ, GENERIC_WRITE, HANDLE,
+        INVALID_HANDLE_VALUE,
     },
     Security::{
         Authorization::{
             ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
             GetNamedSecurityInfoW, SE_FILE_OBJECT,
         },
-        GetTokenInformation, SetFileSecurityW, TokenUser, DACL_SECURITY_INFORMATION,
-        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
-        TOKEN_QUERY, TOKEN_USER,
+        GetTokenInformation, SetFileSecurityW, TokenOwner, TokenUser, DACL_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID, SECURITY_ATTRIBUTES,
+        TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER,
     },
     Storage::FileSystem::{
         CreateDirectoryW, CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -26,7 +26,7 @@ use windows_sys::Win32::{
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
-fn wide(value: &OsStr) -> Vec<u16> {
+pub(super) fn wide(value: &OsStr) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     value.encode_wide().chain(Some(0)).collect()
 }
@@ -39,36 +39,50 @@ impl Drop for Local {
     }
 }
 pub(super) fn sid() -> Result<String, String> {
+    token_sid(TokenUser)
+}
+/// The owner Windows gives what this process creates: the user, or for an
+/// elevated administrator the Administrators group.
+fn default_owner() -> Option<&'static str> {
+    static OWNER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    OWNER.get_or_init(|| token_sid(TokenOwner).ok()).as_deref()
+}
+/// One SID from this process's token (`TokenUser` or `TokenOwner`), as text.
+fn token_sid(class: i32) -> Result<String, String> {
     unsafe {
         let mut token: HANDLE = std::ptr::null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
             return Err("Current-user token unavailable".into());
         }
         let mut bytes = 0;
-        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut bytes);
+        GetTokenInformation(token, class, std::ptr::null_mut(), 0, &mut bytes);
         let mut buffer = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
-        let ok = GetTokenInformation(
-            token,
-            TokenUser,
-            buffer.as_mut_ptr().cast(),
-            bytes,
-            &mut bytes,
-        );
+        let ok = GetTokenInformation(token, class, buffer.as_mut_ptr().cast(), bytes, &mut bytes);
         CloseHandle(token);
         if ok == 0 {
             return Err("Current-user identity unavailable".into());
         }
-        let user = &*buffer.as_ptr().cast::<TOKEN_USER>();
-        let mut text = std::ptr::null_mut();
-        if ConvertSidToStringSidW(user.User.Sid, &mut text) == 0 {
-            return Err("Current-user identity unavailable".into());
-        }
-        let text = Local(text.cast());
-        let mut count = 0;
+        let sid = if class == TokenUser {
+            (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid
+        } else {
+            (*buffer.as_ptr().cast::<TOKEN_OWNER>()).Owner
+        };
+        sid_text(sid).ok_or_else(|| "Current-user identity unavailable".into())
+    }
+}
+/// A SID as text, such as `S-1-5-18`.
+pub(super) fn sid_text(sid: PSID) -> Option<String> {
+    let mut text = std::ptr::null_mut();
+    if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
+        return None;
+    }
+    let text = Local(text.cast());
+    let mut count = 0;
+    unsafe {
         while *text.0.cast::<u16>().add(count) != 0 {
             count += 1;
         }
-        Ok(String::from_utf16_lossy(std::slice::from_raw_parts(
+        Some(String::from_utf16_lossy(std::slice::from_raw_parts(
             text.0.cast::<u16>(),
             count,
         )))
@@ -77,9 +91,12 @@ pub(super) fn sid() -> Result<String, String> {
 pub(super) fn security(inherit: bool) -> Result<Local, String> {
     let sid = sid()?;
     let flags = if inherit { "OICI" } else { "" };
-    let sddl = wide(OsStr::new(&format!(
+    descriptor(&format!(
         "O:{sid}D:P(A;{flags};GA;;;{sid})(A;{flags};GA;;;SY)"
-    )));
+    ))
+}
+fn descriptor(sddl: &str) -> Result<Local, String> {
+    let sddl = wide(OsStr::new(sddl));
     let mut descriptor = std::ptr::null_mut();
     if unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -95,6 +112,15 @@ pub(super) fn security(inherit: bool) -> Result<Local, String> {
     Ok(Local(descriptor))
 }
 pub(crate) fn owned_path(path: &Path) -> bool {
+    path_owner(path).is_some_and(|owner| sid().is_ok_and(|sid| sid == owner))
+}
+/// Owned by this process's default owner. Only transcript reads accept this
+/// (`files::user_transcript`); the app's own folders and inbox never do.
+pub(crate) fn owned_by_default_owner(path: &Path) -> bool {
+    path_owner(path).is_some_and(|owner| default_owner() == Some(owner.as_str()))
+}
+/// A file's owner SID, as text.
+fn path_owner(path: &Path) -> Option<String> {
     let mut owner = std::ptr::null_mut();
     let mut descriptor = std::ptr::null_mut();
     let path = wide(path.as_os_str());
@@ -112,24 +138,19 @@ pub(crate) fn owned_path(path: &Path) -> bool {
     };
     let _descriptor = Local(descriptor);
     if status != 0 || owner.is_null() {
-        return false;
+        return None;
     }
-    let mut text = std::ptr::null_mut();
-    if unsafe { ConvertSidToStringSidW(owner, &mut text) } == 0 {
-        return false;
-    }
-    let text = Local(text.cast());
-    let mut count = 0;
-    unsafe {
-        while *text.0.cast::<u16>().add(count) != 0 {
-            count += 1;
-        }
-    }
-    let owner = unsafe {
-        String::from_utf16_lossy(std::slice::from_raw_parts(text.0.cast::<u16>(), count))
-    };
-    sid().is_ok_and(|sid| sid == owner)
+    sid_text(owner)
 }
+/// The directory that failed the owner check, and what to do about it, so a
+/// failed start names the folder instead of only the rule.
+fn ownership_hint(path: &Path) -> String {
+    format!(
+        "The IPC directory must belong to the current user: {}. Set the folder's owner to your Windows account in Properties > Security > Advanced, or remove the folder so Agent HUD creates it again.",
+        path.display()
+    )
+}
+
 pub(crate) fn private_directory(path: &Path) -> Result<(), String> {
     if let Some(parent) = path
         .parent()
@@ -146,27 +167,24 @@ pub(crate) fn private_directory(path: &Path) -> Result<(), String> {
     }
     let descriptor = security(true)?;
     let wide_path = wide(path.as_os_str());
-    let attributes = SECURITY_ATTRIBUTES {
-        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor.0,
-        bInheritHandle: 0,
-    };
     // The default owner of an elevated process may be Administrators. Set this
     // new leaf's owner explicitly at creation; never take ownership of an
     // existing directory, including one owned by another administrator.
-    if unsafe { CreateDirectoryW(wide_path.as_ptr(), &attributes) } == 0
-        && unsafe { GetLastError() } != ERROR_ALREADY_EXISTS
-    {
-        return Err("The private IPC directory is unavailable".into());
-    }
-    let metadata =
-        std::fs::symlink_metadata(path).map_err(|_| "The private IPC directory is unavailable")?;
+    create_directory(&wide_path, &descriptor)?;
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("The private IPC directory is unavailable: {error}"))?;
     use std::os::windows::fs::MetadataExt;
     if !metadata.is_dir() || metadata.file_attributes() & 0x400 != 0 {
         return Err("The IPC directory cannot be a reparse point".into());
     }
     if !owned_path(path) {
-        return Err("The IPC directory must belong to the current user".into());
+        return Err(ownership_hint(path));
+    }
+    // A directory made just now, or by an earlier launch, already has this
+    // DACL. Writing it again changes nothing, and some security software
+    // refuses that write to an unsigned app, which then could not start.
+    if super::dacl::private(path, &sid()?) {
+        return Ok(());
     }
     if unsafe {
         SetFileSecurityW(
@@ -176,7 +194,27 @@ pub(crate) fn private_directory(path: &Path) -> Result<(), String> {
         )
     } == 0
     {
-        return Err("The private IPC directory ACL could not be set".into());
+        return Err(format!(
+            "The private IPC directory ACL could not be set: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+/// Creates the directory with `descriptor`'s owner and DACL; one already
+/// there is left as it is.
+fn create_directory(path: &[u16], descriptor: &Local) -> Result<(), String> {
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    if unsafe { CreateDirectoryW(path.as_ptr(), &attributes) } == 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_ALREADY_EXISTS as i32) {
+            return Err(format!("The private IPC directory is unavailable: {error}"));
+        }
     }
     Ok(())
 }
@@ -218,4 +256,41 @@ pub(crate) fn private_file(path: &Path, create_new: bool) -> io::Result<std::fs:
         ));
     }
     Ok(file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::dacl;
+    use super::{
+        create_directory, descriptor, ownership_hint, private_directory, security, sid, wide,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn a_new_directory_is_private_from_its_creation() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("new");
+        create_directory(&wide(path.as_os_str()), &security(true).unwrap()).unwrap();
+        assert!(dacl::private(&path, &sid().unwrap()));
+    }
+
+    #[test]
+    fn an_inherited_directory_is_made_private() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("inherited");
+        // The user's own, as private_directory asks, with the DACL the
+        // temporary folder passes on.
+        let owner = descriptor(&format!("O:{}", sid().unwrap())).unwrap();
+        create_directory(&wide(path.as_os_str()), &owner).unwrap();
+        assert!(!dacl::private(&path, &sid().unwrap()));
+        private_directory(&path).unwrap();
+        assert!(dacl::private(&path, &sid().unwrap()));
+    }
+
+    #[test]
+    fn ownership_hint_names_the_directory_and_the_remedy() {
+        let message = ownership_hint(Path::new(r"C:\Users\me\AppData\Local\AgentHUD\ipc"));
+        assert!(message.contains(r"C:\Users\me\AppData\Local\AgentHUD\ipc"));
+        assert!(message.contains("Set the folder's owner"));
+    }
 }

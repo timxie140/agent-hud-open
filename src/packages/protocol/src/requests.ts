@@ -27,6 +27,8 @@ export interface Approval {
   sessionId: string | null;
   createdAt: string;
   allowsAlways: boolean;
+  /** Its client hands the agent the words of a `deny` decision's `message`. */
+  deniesWithReply?: boolean;
   kind?: "permission" | "question" | "plan";
   vendor?: string;
   summary?: string;
@@ -72,6 +74,9 @@ export interface ClientHooksStatus {
     source: string;
     installed: boolean;
     active: boolean;
+    /** Agent HUD puts no hooks in for this client on this system yet; the
+     * notice says what its sessions can't do then (Open #115). */
+    unsupported?: boolean;
     notice: string | null;
   }[];
 }

@@ -1,7 +1,7 @@
 //! What a reader asks of the host: its answers, HTTP requests and their
 //! failures, engines it starts, and web sign-ins.
 use super::{DatabaseFailure, Unread};
-use crate::{l10n, Base, Os};
+use crate::{l10n::tr, Base, Os};
 use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
@@ -99,8 +99,9 @@ pub enum HttpFailure {
     Challenged,
     /// The body could not be read.
     Unreadable,
-    /// The body exceeded `MAX_BODY`.
-    TooLarge,
+    /// The body exceeded `MAX_BODY`; `size` is how long it was, when it
+    /// could be counted to its end.
+    TooLarge { size: Option<u64> },
     /// The body is not JSON.
     NotJson,
 }
@@ -112,45 +113,28 @@ impl HttpFailure {
     /// `BadHeader` itself when it knows better what it asked.
     pub fn message(self) -> String {
         match self {
-            HttpFailure::BadHeader => l10n::text(
-                "凭据格式无效，无法用于请求",
-                "The credential cannot be used in a request",
-            ),
+            HttpFailure::BadHeader => tr!("The credential cannot be used in a request"),
             HttpFailure::Unreachable => {
-                l10n::text("额度服务无法连接", "The quota service could not be reached")
+                tr!("The quota service could not be reached")
             }
-            HttpFailure::Status(401 | 403) => l10n::text(
-                "现有登录已失效或无额度读取权限",
-                "Existing sign-in expired or quota access is unavailable",
-            ),
+            HttpFailure::Status(401 | 403) => {
+                tr!("Existing sign-in expired or quota access is unavailable")
+            }
             // Better than Open's bare status: a rate limit passes by itself.
-            HttpFailure::Status(429) | HttpFailure::Limited { .. } => l10n::text(
-                "额度服务暂时限制了请求，稍后自动重试",
-                "The quota service is rate limiting requests; retrying later",
-            ),
-            HttpFailure::Challenged => l10n::text(
-                "额度服务要求浏览器验证，暂时读不到，稍后自动重试",
-                "The quota service asked for a browser check; retrying later",
-            ),
-            HttpFailure::Status(code) => {
-                if l10n::chinese() {
-                    format!("额度服务返回 HTTP {code}")
-                } else {
-                    format!("Quota service returned HTTP {code}")
-                }
+            HttpFailure::Status(429) | HttpFailure::Limited { .. } => {
+                tr!("The quota service is rate limiting requests; retrying later")
             }
-            HttpFailure::Unreadable => l10n::text(
-                "额度服务的回应无法读取",
-                "The quota service's response could not be read",
-            ),
-            HttpFailure::TooLarge => l10n::text(
-                "额度服务的回应超过大小上限",
-                "The quota service's response exceeded the size limit",
-            ),
-            HttpFailure::NotJson => l10n::text(
-                "额度服务返回了无法识别的格式",
-                "The quota service returned an unsupported format",
-            ),
+            HttpFailure::Challenged => {
+                tr!("The quota service asked for a browser check; retrying later")
+            }
+            HttpFailure::Status(code) => {
+                tr!("Quota service returned HTTP {{code}}", code = code)
+            }
+            HttpFailure::Unreadable => tr!("The quota service's response could not be read"),
+            HttpFailure::TooLarge { .. } => {
+                tr!("The quota service's response exceeded the size limit")
+            }
+            HttpFailure::NotJson => tr!("The quota service returned an unsupported format"),
         }
     }
     /// The failure as a reading's `Unread`, with `message` as its reason. No
@@ -203,8 +187,8 @@ pub struct WebSession {
     pub cookie: String,
     pub user_agent: String,
 }
-/// The browser identity Agent HUD's sign-in window presents, and every
-/// request made with its session after.
+/// A browser identity for a web session in tests. A real session carries the
+/// identity its sign-in window presented (the host's `web_sign_in`).
 pub const WEB_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 
 /// What an account reader may ask of the machine it runs on. Platform
@@ -229,6 +213,17 @@ pub trait Host {
     /// A file's first `limit + 1` bytes, so the caller can tell a file over
     /// its limit from one that fits.
     fn read_file(&self, path: &Path, limit: u64) -> Answer<Vec<u8>>;
+    /// A file's last `limit` bytes, all of a smaller one. The default reads
+    /// the file whole, up to 64 MiB; a host that can seek reads only the end.
+    fn read_tail(&self, path: &Path, limit: u64) -> Answer<Vec<u8>> {
+        match self.read_file(path, 64 * 1024 * 1024) {
+            Answer::Found(bytes) => {
+                let start = bytes.len().saturating_sub(limit as usize);
+                Answer::Found(bytes[start..].to_vec())
+            }
+            other => other,
+        }
+    }
     /// The path with links resolved, when it exists.
     fn canonical(&self, path: &Path) -> Option<PathBuf>;
     /// A path's size, time and kind, without following a final link.
@@ -261,6 +256,12 @@ pub trait Host {
     /// Whether the user turned on a reading that needs their consent, by its
     /// setting key. Checked again during a reading, since it can change.
     fn consented(&self, setting: &str) -> bool;
+    /// How far the user lets Agent HUD go to read `agent`'s quota
+    /// (`quota_reading::SETTING`). Checked again during a reading, since it
+    /// can change; `Full`, as before the setting, unless the user chose.
+    fn quota_reading(&self, _agent: &str) -> super::QuotaReading {
+        super::QuotaReading::Full
+    }
     /// A JSON document over HTTPS, at most `MAX_BODY` long.
     fn http_json(&self, request: &HttpRequest) -> Result<Value, HttpFailure>;
     /// Rows of a read-only query on a client's SQLite database, waiting at

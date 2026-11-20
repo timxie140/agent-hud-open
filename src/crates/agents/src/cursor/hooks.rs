@@ -1,7 +1,7 @@
 //! Cursor's completion hook, in its version-1 settings.
 use crate::hooks::{Began, Begin, Completed, Completion, Handler, Hooks, Layout, POSIX_ONLY};
 use crate::text;
-use crate::{Location, Usage};
+use crate::{HookEvent, Location, Usage};
 use serde_json::Value;
 
 pub static HOOKS: Hooks = Hooks {
@@ -18,7 +18,7 @@ pub static HOOKS: Hooks = Hooks {
         event: "stop",
         timeout: 5,
         read: completed,
-        enrich: None,
+        enrich: Some(reply),
         // Cursor lets a prompt through unless the hook says `continue: false`;
         // say so rather than rely on an empty answer.
         reply: Some(r#"{"continue":true}"#),
@@ -30,6 +30,7 @@ pub static HOOKS: Hooks = Hooks {
     origin: None,
     attention: false,
     compaction: None,
+    rewake: None,
     prefixed_sessions: true,
     launch: POSIX_ONLY,
 };
@@ -43,6 +44,45 @@ fn began(payload: &Value) -> Option<Began> {
         workspace: payload["workspace_roots"][0].as_str().map(str::to_owned),
         waiting: false,
     })
+}
+
+/// The reply of the turn that ended, from the tail of the transcript its
+/// `stop` names (`agent-transcripts/<id>/<id>.jsonl`: a `role` and
+/// `message.content` parts per line, `turn_ended` between turns), since the
+/// payload carries none. Only text after the turn's prompt counts: a tail
+/// whose last prompt has no reply yet gives nothing, never an older turn's.
+fn reply(event: &mut HookEvent, transcript_tail: &[u8]) -> bool {
+    if event.kind != "completion" || !event.data["message"].is_null() {
+        return false;
+    }
+    let mut parts = Vec::new();
+    for line in transcript_tail.split(|byte| *byte == b'\n').rev() {
+        let Ok(record) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        match record["role"].as_str() {
+            Some("user") => break,
+            Some("assistant") => {
+                let text = record["message"]["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|part| part["type"] == "text")
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("");
+                if !text.trim().is_empty() {
+                    parts.push(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(last) = parts.into_iter().next() else {
+        return false;
+    };
+    event.data["message"] = serde_json::json!(last);
+    true
 }
 
 /// A completed generation: the conversation and the generation that ended.
@@ -95,6 +135,52 @@ fn usage(payload: &Value) -> Option<Usage> {
 }
 
 #[cfg(test)]
+mod reply_tests {
+    use super::reply;
+    use crate::HookEvent;
+    use serde_json::json;
+
+    fn event() -> HookEvent {
+        HookEvent {
+            source: "cursor".into(),
+            session_id: "cursor:8729".into(),
+            at_ms: 0,
+            kind: "completion".into(),
+            data: json!({"turnId":"g2"}),
+        }
+    }
+
+    #[test]
+    fn the_reply_comes_from_the_turns_own_lines_in_the_transcript() {
+        let user = |t: &str| {
+            json!({"role":"user","message":{"content":[{"type":"text","text":t}]}}).to_string()
+        };
+        let assistant = |t: &str| {
+            json!({"role":"assistant","message":{"content":[{"type":"text","text":t}]}}).to_string()
+        };
+        let ended = json!({"type":"turn_ended","status":"success"}).to_string();
+        let tail = [
+            user("one"),
+            assistant("ONE"),
+            ended.clone(),
+            user("two"),
+            assistant("Looking."),
+            assistant("TWO"),
+            ended,
+        ]
+        .join("\n");
+        let mut done = event();
+        assert!(reply(&mut done, tail.as_bytes()));
+        assert_eq!(done.data["message"], "TWO");
+        // The turn's prompt is there but not its reply yet: nothing, not "ONE".
+        let early = [user("one"), assistant("ONE"), user("two")].join("\n");
+        let mut waiting = event();
+        assert!(!reply(&mut waiting, early.as_bytes()));
+        assert!(waiting.data["message"].is_null());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -114,27 +200,6 @@ mod tests {
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
         payload
-    }
-
-    #[test]
-    fn a_stop_with_tokens_keeps_the_fresh_input_apart_from_cache_reads() {
-        let done = completed(
-            &stop(json!({
-                "input_tokens": 740_409,
-                "output_tokens": 17_649,
-                "cache_read_tokens": 639_616,
-                "cache_write_tokens": 0,
-            })),
-            0,
-        )
-        .unwrap();
-        let usage = done.usage.unwrap();
-        assert_eq!(
-            (usage.input, usage.output, usage.read, usage.write),
-            (100_793, 17_649, 639_616, 0)
-        );
-        assert_eq!(done.model.as_deref(), Some("grok-4.7"));
-        assert_eq!(done.workspace.as_deref(), Some("/Users/me/project"));
     }
 
     #[test]

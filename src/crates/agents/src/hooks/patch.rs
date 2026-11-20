@@ -9,6 +9,13 @@ use serde_json::{json, Map, Value};
 /// Keys every handler of this hook carries. A hooks-only file's client
 /// (`Layout::Events`) runs its hooks one way and takes no `async`.
 fn fixed(hooks: &Hooks, flag: &str) -> Map<String, Value> {
+    if flag == "--rewake-hook" {
+        return hooks
+            .rewake
+            .as_ref()
+            .and_then(|rewake| serde_json::from_str(rewake.fields).ok())
+            .unwrap_or_default();
+    }
     if !matches!(hooks.layout, Layout::Events { .. })
         && matches!(
             flag,
@@ -172,27 +179,30 @@ pub fn patch_configuration(
         if root.get("version").is_some_and(|v| v != &json!(1)) {
             return Err("Unsupported hook configuration version".into());
         }
-        let event = &desc.events[0];
-        let handlers = optional_array(&hooks_object, event)?;
         let key = handler.command_key;
-        let mut placed = false;
-        let mut result =
-            setting_handlers(handlers, (source, hooks, flag), key, command, &mut placed);
-        if let Some(command) = command {
-            if !placed {
-                let mut new = Map::new();
-                if handler.typed {
-                    new.insert("type".into(), json!("command"));
+        // Every event of the hook: Cursor's prompt, tool and reply events
+        // beside its `stop` say a turn is going.
+        for event in &desc.events {
+            let handlers = optional_array(&hooks_object, event)?;
+            let mut placed = false;
+            let mut result =
+                setting_handlers(handlers, (source, hooks, flag), key, command, &mut placed);
+            if let Some(command) = command {
+                if !placed {
+                    let mut new = Map::new();
+                    if handler.typed {
+                        new.insert("type".into(), json!("command"));
+                    }
+                    new.insert(key.into(), json!(command));
+                    new.insert(handler.timeout_key.into(), json!(timeout(hooks, flag)));
+                    result.push(Value::Object(new));
                 }
-                new.insert(key.into(), json!(command));
-                new.insert(handler.timeout_key.into(), json!(timeout(hooks, flag)));
-                result.push(Value::Object(new));
             }
-        }
-        if result.is_empty() {
-            hooks_object.remove(event);
-        } else {
-            hooks_object.insert(event.clone(), Value::Array(result));
+            if result.is_empty() {
+                hooks_object.remove(event);
+            } else {
+                hooks_object.insert(event.clone(), Value::Array(result));
+            }
         }
         root.insert("hooks".into(), Value::Object(hooks_object));
         root.insert("version".into(), json!(1));

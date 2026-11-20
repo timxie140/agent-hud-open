@@ -38,6 +38,8 @@ test("Dot shows connection instead of quota or usage", () => {
     subscribed: true,
   };
   assert.equal(dotConnectionLabel(status, "zh"), "已连接");
+  assert.equal(dotConnectionLabel(status, "zh-Hans"), "已连接");
+  assert.equal(dotConnectionLabel(status, "zh-Hant"), "已连接");
   assert.equal(
     dotConnectionLabel({ ...status, subscribed: false }, "en"),
     "Awaiting Dot subscription",

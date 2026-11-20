@@ -68,6 +68,7 @@ impl Messaging {
             turn: None,
             answered: false,
             replied_by: None,
+            steered_into: None,
         });
         (self.fly)(flight(
             &sender,

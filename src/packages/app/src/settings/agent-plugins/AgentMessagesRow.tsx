@@ -8,13 +8,10 @@ import { useState } from "react";
 import { toast } from "sonner";
 import type { Snapshot } from "@agent-hud/protocol";
 import { Switch } from "@agent-hud/ui/components/switch";
-import { Menu } from "../SettingsControls";
-import {
-  Pill,
-  Row,
-  type SettingsPaneProps,
-  type Text,
-} from "../SettingsPrimitives";
+import { isChinese, type Translate } from "@agent-hud/ui/format";
+import { useFormat } from "@agent-hud/ui/format-context";
+import { LinkButton, Menu } from "../SettingsControls";
+import { Pill, Row, type SettingsPaneProps } from "../SettingsPrimitives";
 import { ToolSwitchRow } from "./rows";
 
 const LIMITS = [3, 5, 10, 20, 50];
@@ -26,8 +23,9 @@ export function AgentMessagesRow({
 }: {
   snapshot: Snapshot;
   action: SettingsPaneProps["action"];
-  t: Text;
+  t: Translate;
 }) {
+  const { language } = useFormat();
   const [pending, setPending] = useState(false);
   const settings = snapshot.settings;
   const enabled = settings.agentMessages === true;
@@ -45,61 +43,67 @@ export function AgentMessagesRow({
   };
   const limits =
     limit !== null && !LIMITS.includes(limit) ? [...LIMITS, limit] : LIMITS;
-  const asMe = t("Send as me", "以我的身份发送");
+  const asMe = t("Send as me");
   return (
-    <ToolSwitchRow
-      title={t("Let agents message each other", "允许智能体互发消息")}
-      description={t(
-        "Agents message, start and read other sessions here.",
-        "智能体可给本机其他会话发消息、开新会话、取回回答。",
-      )}
-      checked={enabled}
-      pending={pending}
-      onChange={(value) => set("agentMessages", value)}
-    >
-      {/* "Send as me" carries a caution tag, which PluginControl has no
-       * place for, so it is a Settings row of its own. */}
-      <Row
-        title={
-          <>
-            {asMe} <Pill tone="orange">{t("Caution", "注意")}</Pill>
-          </>
-        }
-        subtitle={t(
-          "No agent label: others act on it as yours.",
-          "不标明来自智能体，对方会当成你的话照做。",
-        )}
+    <>
+      <ToolSwitchRow
+        anchor="agent-messages"
+        title={t("Let agents message each other")}
+        description={t("Agents message, start and read other sessions here.")}
+        checked={enabled}
+        pending={pending}
+        onChange={(value) => set("agentMessages", value)}
       >
-        <Switch
-          aria-label={asMe}
-          checked={asUser}
-          disabled={pending}
-          onCheckedChange={(value) => set("agentMessagesAsUser", value)}
-        />
-      </Row>
-      <Row
-        title={t("Passes in a row", "连续来回上限")}
-        subtitle={t(
-          "Then they wait for you. Your next message resets it.",
-          "到了就停下等你；你说一句就重新计数。",
-        )}
-      >
-        <Menu
-          label={t("Passes in a row", "连续来回上限")}
-          value={limit === null ? "none" : String(limit)}
-          disabled={pending}
-          width={88}
-          change={(value) =>
-            set("agentMessagesLimit", value === "none" ? null : Number(value))
+        {/* "Send as me" carries a caution tag, which PluginControl has no
+         * place for, so it is a Settings row of its own. */}
+        <Row
+          title={
+            <>
+              {asMe} <Pill tone="orange">{t("Caution")}</Pill>
+            </>
           }
-          options={[
-            ...[...limits]
-              .sort((a, b) => a - b)
-              .map((each): [string, string] => [String(each), String(each)]),
-            ["none", t("No limit", "不限")],
-          ]}
-        />
+          subtitle={t("No agent label: others act on it as yours.")}
+        >
+          <Switch
+            aria-label={asMe}
+            checked={asUser}
+            disabled={pending}
+            onCheckedChange={(value) => set("agentMessagesAsUser", value)}
+          />
+        </Row>
+        <Row
+          title={t("Passes in a row")}
+          subtitle={t("Then they wait for you. Your next message resets it.")}
+        >
+          <Menu
+            label={t("Passes in a row")}
+            value={limit === null ? "none" : String(limit)}
+            disabled={pending}
+            width={88}
+            change={(value) =>
+              set("agentMessagesLimit", value === "none" ? null : Number(value))
+            }
+            options={[
+              ...[...limits]
+                .sort((a, b) => a - b)
+                .map((each): [string, string] => [String(each), String(each)]),
+              ["none", t("No limit")],
+            ]}
+          />
+        </Row>
+      </ToolSwitchRow>
+      {/* Shown with the switch off too: the guide says how to turn it on. */}
+      <Row title={t("How agent messages work")}>
+        <LinkButton
+          href={
+            isChinese(language)
+              ? "https://agenthud.app/docs/zh/mcp/messaging/"
+              : "https://agenthud.app/docs/en/mcp/messaging/"
+          }
+        >
+          {t("Open the guide")}
+        </LinkButton>
       </Row>
-    </ToolSwitchRow>
+    </>
   );
 }

@@ -6,12 +6,11 @@ import {
   sessionClient,
   sessionHelp,
 } from "../src/lib/sessions.ts";
-import { hourModels } from "../src/lib/statistics.ts";
 
 test("list costs read as Open's ListCost.text: ≈ each currency, US dollars first, then by code", () => {
   assert.equal(listCost({ CNY: 45.6, USD: 12.3 }, "en"), "≈$12.30 · ≈¥45.60");
   assert.equal(
-    listCost({ EUR: 2, CNY: 8.85, USD: 1 }, "zh"),
+    listCost({ EUR: 2, CNY: 8.85, USD: 1 }, "zh-Hans"),
     "≈$1.00 · ≈¥8.85 · ≈€2.00",
   );
   assert.equal(
@@ -81,16 +80,4 @@ test("the Today card names every kind present, in Open's order", () => {
     ],
     "reasoning is absent, so it is left out",
   );
-});
-
-test("an hour's models read most tokens first, ties by id", () => {
-  assert.deepEqual(
-    hourModels({ "codex:gpt-5": 10, "claude:opus": 30, "claude:haiku": 10 }),
-    [
-      ["claude:opus", 30],
-      ["claude:haiku", 10],
-      ["codex:gpt-5", 10],
-    ],
-  );
-  assert.deepEqual(hourModels(undefined), []);
 });

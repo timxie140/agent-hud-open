@@ -11,6 +11,7 @@ struct Dot {
     proactive: bool,
     target: Option<String>,
     registry: Value,
+    delivery: Option<String>,
 }
 fn connect(world: &mut World) -> Arc<Mutex<Dot>> {
     let state = Arc::new(Mutex::new(Dot::default()));
@@ -33,14 +34,14 @@ fn connect(world: &mut World) -> Arc<Mutex<Dot>> {
                 "pending" => {
                     json!({"messages":if state.claimed || state.parent.is_empty() {json!([])} else {
                     json!([{"id":state.parent,"source":format!("codex:{}",state.target.as_deref().unwrap_or(CODEX)),
-                        "origin":if state.proactive {"dot"} else {"codex"}}])}})
+                        "origin":if state.proactive {"dot"} else {"codex"},"delivery":state.delivery}])}})
                 }
                 "claim" => {
                     assert_eq!(value["receiptProtocol"], "native-v2");
                     state.claimed = true;
                     json!({"claimed":true,"replyId":if state.proactive {&state.parent} else {"m-reply-fixture"},
                     "source":format!("codex:{}",state.target.as_deref().unwrap_or(CODEX)),"origin":if state.proactive {"dot"} else {"codex"},
-                    "text":"ACK isolated fixture","receiptProtocol":"native-v2"})
+                    "text":"ACK isolated fixture","receiptProtocol":"native-v2","delivery":state.delivery})
                 }
                 "receipt_authorization" => {
                     assert_eq!(value["source"], format!("codex:{CODEX}"));
@@ -109,7 +110,7 @@ fn dot_flies_both_ways_reports_native_queue_and_waits_for_real_input() {
     assert_eq!(flights[1]["from"], "dot");
     assert_eq!(flights[1]["to"], "codex");
     // Only the fixture native owner now attests the exact submitted input.
-    world.codex.1.store(true, AtomicOrdering::SeqCst);
+    world.codex.2.store(true, AtomicOrdering::SeqCst);
     world.maintain(1_792_600_015_000);
     world.maintain(1_792_600_020_000);
     assert_eq!(
@@ -139,7 +140,7 @@ fn uncertain_confirmation_is_reserved_across_reload_without_resend() {
     dot.lock().unwrap().fail_confirm = true;
     world.send(("codex", CODEX), "dot:luo", "isolated marker");
     world.maintain(1_792_600_005_000);
-    world.codex.1.store(true, AtomicOrdering::SeqCst);
+    world.codex.2.store(true, AtomicOrdering::SeqCst);
     world.maintain(1_792_600_010_000);
     world.messaging.journal =
         Journal::load(world.fixture.root.join("data/messaging/messages.json"));
@@ -173,7 +174,7 @@ fn proactive_dot_selects_existing_codex_without_a_fake_mcp_caller_and_confirms_a
     world.maintain(1_792_600_005_000);
     let sends = world.codex.0.lock().unwrap();
     assert_eq!(sends.len(), 1);
-    assert_eq!(sends[0].operation, Operation::SteerOrEnqueue);
+    assert_eq!(sends[0].operation, Operation::Enqueue);
     assert!(sends[0]
         .text
         .starts_with("[Agent HUD · Dot; message_id=m-proactive-fixture]"));
@@ -188,7 +189,7 @@ fn proactive_dot_selects_existing_codex_without_a_fake_mcp_caller_and_confirms_a
     assert_eq!(message.from.client, "dot");
     assert_eq!(message.to.session_id, CODEX);
     assert!(message.reply_to.is_none());
-    world.codex.1.store(true, AtomicOrdering::SeqCst);
+    world.codex.2.store(true, AtomicOrdering::SeqCst);
     world.maintain(1_792_600_010_000);
     world.maintain(1_792_600_015_000);
     assert_eq!(
@@ -239,10 +240,76 @@ fn reservation_write_failure_never_confirms() {
     let dot = connect(&mut world);
     world.send(("codex", CODEX), "dot:luo", "isolated marker");
     world.maintain(1_792_600_005_000);
-    world.codex.1.store(true, AtomicOrdering::SeqCst);
+    world.codex.2.store(true, AtomicOrdering::SeqCst);
     let path = world.fixture.root.join("data/messaging/messages.json");
     std::fs::remove_file(&path).unwrap();
     std::fs::create_dir(&path).unwrap();
     world.maintain(1_792_600_010_000);
     assert!(!dot.lock().unwrap().calls.iter().any(|c| c == "confirm"));
+}
+
+#[test]
+fn dot_explicit_steer_is_one_attempt_and_never_falls_back_to_queue() {
+    for idle in [false, true] {
+        let mut world = World::on();
+        let dot = connect(&mut world);
+        {
+            let mut state = dot.lock().unwrap();
+            state.proactive = true;
+            state.parent = "m-steer-fixture".into();
+            state.delivery = Some("steer".into());
+        }
+        world.codex.1.store(idle, AtomicOrdering::SeqCst);
+        world.maintain(1_792_600_005_000);
+        world.maintain(1_792_600_010_000);
+        let sends = world.codex.0.lock().unwrap();
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].operation, Operation::Steer);
+        assert_eq!(
+            dot.lock().unwrap().native["state"],
+            if idle { "refused" } else { "accepted" }
+        );
+    }
+}
+
+#[test]
+fn dot_reply_cannot_steer_and_codex_to_dot_cannot_steer() {
+    let mut world = World::on();
+    let dot = connect(&mut world);
+    let response = world.call(
+        Some(("codex", CODEX)),
+        "send_message",
+        json!({"to":"dot:luo","text":"fixture","delivery":"steer"}),
+    );
+    assert_eq!(response["state"], "refused");
+    assert!(!dot.lock().unwrap().calls.iter().any(|call| call == "send"));
+    world.send(("codex", CODEX), "dot:luo", "fixture");
+    dot.lock().unwrap().delivery = Some("steer".into());
+    world.maintain(1_792_600_005_000);
+    assert!(world.codex.0.lock().unwrap().is_empty());
+    assert_eq!(
+        dot.lock().unwrap().native["reasonCode"],
+        "steer_reply_unsupported"
+    );
+}
+
+#[test]
+fn published_codex_steerable_uses_official_session_policy() {
+    let mut world = World::on();
+    let dot = connect(&mut world);
+    world.maintain(1_792_600_005_000);
+    assert_eq!(
+        dot.lock().unwrap().registry["sessions"][0]["steerable"],
+        false
+    );
+    world.state(CODEX, "running");
+    let locks = world.fixture.home().join(".codex/thread-writer-locks");
+    std::fs::create_dir_all(&locks).unwrap();
+    let lock = std::fs::File::create(locks.join(format!("{CODEX}.lock"))).unwrap();
+    lock.lock().unwrap();
+    world.maintain(1_792_600_010_000);
+    assert_eq!(
+        dot.lock().unwrap().registry["sessions"][0]["steerable"],
+        true
+    );
 }

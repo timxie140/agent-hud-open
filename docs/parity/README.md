@@ -29,6 +29,10 @@ Deliberate differences:
 - Demo mode only through `--demo`.
 - The LAN token-usage and session service, which Open does not have.
 - The Windows and Linux adapters.
+- Windows automatic Codex delivery requests the native thread wake URI after a
+  verified single-item queue write. A known backlog or unverifiable queue is
+  deliberately left queued to avoid starting old work; opening the link is not
+  counted as receipt. See [Windows queue activation](../windows-codex-queue-wake.md).
 - Decided 2026-10-20:
   - during the preview, client hooks default off and install only with a delegated fixed executable, so a preview build never rewrites existing client hooks;
   - the Settings window opens at launch with a Dock icon (since 2026-10-21 the HUD shows from the first run, as in Open; hiding it stays an extra choice);

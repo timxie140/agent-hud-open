@@ -18,6 +18,7 @@ impl StartConfig {
                 .unwrap_or_else(|| home.join(".codex")),
             claude_executable: crate::client_executable("claude"),
             codex_executable: crate::client_executable("codex"),
+            discover_codex_executable: host::discover_codex_per_operation(),
             antigravity_executable: crate::client_executable("agy"),
             claude_desktop: false,
             codex_desktop: false,

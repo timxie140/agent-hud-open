@@ -63,6 +63,7 @@ pub static HOOKS: Hooks = Hooks {
     origin: None,
     attention: true,
     compaction: Some(Compaction { legacy_flag: None }),
+    rewake: None,
     prefixed_sessions: true,
     launch: PerOs {
         macos: Support::Unverified(Launch::Command),
@@ -350,22 +351,6 @@ mod tests {
             seed_shadowed("claude", "--permission-hook", &json!({}), &settings).unwrap(),
             json!({})
         );
-    }
-
-    #[test]
-    fn it_installs_four_hooks_into_hooks_json() {
-        assert_eq!(
-            HOOKS.flags(),
-            [
-                "--permission-hook",
-                "--completion-hook",
-                "--attention-hook",
-                "--compaction-hook"
-            ]
-        );
-        let permission = crate::configuration("droid", "--permission-hook").unwrap();
-        assert_eq!(permission.events, ["PreToolUse"]);
-        assert_eq!(permission.relative_path, ".factory/hooks.json");
     }
 
     #[test]

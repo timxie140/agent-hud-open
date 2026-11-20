@@ -1,7 +1,7 @@
 //! Explicit installation coordinator. Status is refreshed only at delegation or
 //! a user setting action, never by the five-second snapshot projection.
 use super::{install, observers, InstallContext};
-use agent_hud_core::l10n;
+use agent_hud_core::l10n::tr;
 use serde_json::{json, Value};
 #[derive(Default)]
 pub(super) struct Clients {
@@ -12,6 +12,9 @@ pub(super) struct Clients {
     opted_in: Vec<String>,
     /// Whether the clients' hooks are in: the last install put them in.
     on: bool,
+    /// Agent HUD's hook channel folder, written into the observer scripts
+    /// whose mailbox hands their sessions messages (`observers::script`).
+    channel: Option<std::path::PathBuf>,
 }
 /// Every hook the client has, in install order, each with whether it goes
 /// in: one that waits for the user only once they turned it on.
@@ -30,6 +33,34 @@ fn launches(source: &str, os: agent_hud_agents::Os) -> bool {
     agent_hud_agents::hooks::hooks_by_id(source)
         .is_some_and(|hooks| hooks.launch.on(os).value().is_some())
 }
+/// Whether Agent HUD puts `source`'s hooks in on this operating system. Where
+/// it does not, a client that takes messages through its hooks cannot take
+/// one here (Open #89).
+pub fn launches_here(source: &str) -> bool {
+    launches(source, crate::os::OS)
+}
+/// This operating system's name as people read it.
+pub fn system_name() -> &'static str {
+    match crate::os::OS {
+        agent_hud_agents::Os::MacOs => "macOS",
+        agent_hud_agents::Os::Windows => "Windows",
+        agent_hud_agents::Os::Linux => "Linux",
+    }
+}
+/// Why a client found here has no hooks: Agent HUD does not put them in on
+/// this system yet. Said in Settings, so its sessions never look like a
+/// setup the person got wrong (Open #115).
+fn unsupported_notice(source: &str) -> String {
+    let system = system_name();
+    if crate::delivery::Provider::parse(source).is_some_and(|p| p.uses_hook_channel()) {
+        tr!("Agent HUD doesn't put this client's hooks in on {{system}} yet, so its sessions can send agent messages but can't take them.", system = system)
+    } else {
+        tr!(
+            "Agent HUD doesn't put this client's hooks in on {{system}} yet.",
+            system = system
+        )
+    }
+}
 /// Whether the client reports its sessions through an observer plugin.
 fn observed(source: &str) -> bool {
     agent_hud_agents::by_id(source).is_some_and(|agent| agent.observer.is_some())
@@ -43,6 +74,14 @@ fn found(context: &InstallContext) -> Vec<String> {
         .collect()
 }
 impl Clients {
+    /// The installer for the clients, with the hook channel folder the
+    /// observers' mailboxes read.
+    pub(super) fn with_channel(channel: std::path::PathBuf) -> Self {
+        Self {
+            channel: Some(channel),
+            ..Self::default()
+        }
+    }
     pub(super) fn context(&self) -> Option<&InstallContext> {
         self.context.as_ref()
     }
@@ -56,7 +95,7 @@ impl Clients {
     /// the notice; the others still go in, so one broken client folder never turns the switch off (Open #16). The
     /// error is only what stops every client.
     pub fn install(&mut self, enabled: bool) -> Result<(), String> {
-        let context=self.context.as_ref().ok_or_else(|| l10n::text("这个版本没有指定固定的回调程序，客户端配置未作改动", "No fixed hook-owner executable has been delegated; no client configuration was changed"))?;
+        let context=self.context.as_ref().ok_or_else(|| tr!("No fixed hook-owner executable has been delegated; no client configuration was changed"))?;
         if enabled {
             install::canonical(context)?;
         }
@@ -64,8 +103,9 @@ impl Clients {
         let mut errors = Vec::new();
         for source in found(context) {
             if observed(&source) {
-                if let Err(error) = observers::observer_plan(context, &source, enabled)
-                    .and_then(|plan| observers::apply_observer_plan(&plan))
+                if let Err(error) =
+                    observers::observer_plan(context, &source, enabled, self.channel.as_deref())
+                        .and_then(|plan| observers::apply_observer_plan(&plan))
                 {
                     errors.push(format!("{source}: {error}"));
                 }
@@ -163,7 +203,7 @@ impl Clients {
             let mut error = None;
             if observed(&source) {
                 known = true;
-                match observers::observer_plan(context, &source, true) {
+                match observers::observer_plan(context, &source, true, self.channel.as_deref()) {
                     Ok(plan) => installed &= !plan.changed,
                     Err(e) => {
                         installed = false;
@@ -187,6 +227,12 @@ impl Clients {
                     }
                 }
             }
+            if !known && !hooked && agent_hud_agents::hooks::hooks_by_id(&source).is_some() {
+                self.rows
+                    .push(json!({"source":source,"installed":false,"active":false,
+                    "unsupported":true,"notice":unsupported_notice(&source)}));
+                continue;
+            }
             if known {
                 // Installed hooks some clients run only after a step in the client.
                 let notice = error.or_else(|| {
@@ -202,7 +248,17 @@ impl Clients {
     }
     pub fn status(&self, enabled: bool, desired: bool) -> Value {
         let installed = self.rows.iter().any(|row| row["installed"] == true);
-        let notice=self.notice.clone().or_else(||if self.context.is_none(){Some(l10n::text("这个版本没有指定固定的回调程序。接收回调不会安装客户端回调，客户端配置未作改动。", "No fixed hook-owner executable has been delegated. Listening does not install client hooks; client configuration is unchanged."))}else{None});
+        let notice = self.notice.clone().or_else(|| {
+            self.context.is_none().then(|| {
+                let copy = crate::launched_executable()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default();
+                tr!(
+                    "Only the installed Agent HUD can install client hooks; this copy is at {{copy}}. Client settings are unchanged.",
+                    copy = copy
+                )
+            })
+        });
         json!({"supported":true,"enabled":enabled,"desired":desired,"installed":installed,"installable":self.context.is_some(),"notice":notice,"clients":self.rows})
     }
 }
@@ -221,6 +277,33 @@ mod tests {
             assert!(super::launches(client, Os::MacOs), "{client}");
         }
         assert!(!super::launches("not-a-client", Os::MacOs));
+    }
+
+    /// Open #115: list_sessions and Settings say "not on this system yet" for
+    /// exactly these; on macOS every client that takes messages by hook has them.
+    #[test]
+    fn which_message_hook_clients_have_their_hooks_on_each_system() {
+        let clients = [
+            "cursor",
+            "trae",
+            "trae-cn",
+            "workbuddy",
+            "codebuddy",
+            "zcode",
+            "qoder",
+            "qoder-cn",
+            "qoder-work",
+            "kimi",
+        ];
+        let on = |os| -> Vec<&str> {
+            clients
+                .into_iter()
+                .filter(|c| super::launches(c, os))
+                .collect()
+        };
+        assert_eq!(on(Os::MacOs), clients);
+        // None is checked on Windows yet; each joins once it is (Open #89).
+        assert!(on(Os::Windows).is_empty());
     }
 
     #[test]

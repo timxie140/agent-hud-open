@@ -17,14 +17,18 @@ import { useSelectedScreen } from "./lib/use-selected-screen";
 import { useRequestDeliveryToasts } from "./lib/use-request-delivery-toasts";
 import { useWindowTheme } from "./lib/use-window-theme";
 import { storageKeys } from "./lib/storage-keys";
+import { withAppDraft } from "./lib/app-draft";
+import { useWebLinks } from "./lib/use-web-links";
 import type { HUDConfig } from "@agent-hud/hud/model";
 import { snapshotLanguage } from "@agent-hud/ui/format";
-import type { AgentPluginItem } from "./settings/AgentPluginsPane";
+import type { AgentPluginItem } from "./settings/agent-plugins/types";
 import type { AppExtensionPage } from "./settings/pages";
+import type { ProductGuide } from "./guide/plan";
 import { SettingsWindow } from "./settings/SettingsWindow";
 import { SourceMenu } from "./SourceMenu";
 import { StatisticsWindow } from "./StatisticsWindow";
 import { hudEndsLink } from "./lib/hud-ends-link";
+import { hudInspect } from "./lib/hud-inspect";
 import "./lib/animation-handlers";
 
 // Windows load their own views. Statistics does not need the shader/bot renderer,
@@ -33,11 +37,15 @@ const NativeHUDSurface = lazy(() => import("./HUDSurface"));
 
 export interface AppProps {
   extensionPages?: AppExtensionPage[];
-  /** Rows a product build adds to a client's card on Agent plugins. */ agentPlugins?: AgentPluginItem[];
+  /** Rows a product build adds to a client's page on Agents, and agent tools of its own. */
+  agentPlugins?: AgentPluginItem[];
+  /** What the product adds to the guide: its news and its Settings steps. */
+  guide?: ProductGuide;
   productName?: string;
   version?: string;
 }
 const PictureView = lazy(() => import("./HUDPicture"));
+const MarkWindow = lazy(() => import("./mark/MarkWindow"));
 export default function App(props: AppProps = {}) {
   if (new URLSearchParams(location.search).get("surface") === "picture")
     return <PictureView />;
@@ -46,13 +54,15 @@ export default function App(props: AppProps = {}) {
 function AppContent({
   extensionPages = [],
   agentPlugins = [],
+  guide,
   productName = "Agent HUD",
   version = "0.1.0",
 }: AppProps) {
   const parameters = new URLSearchParams(location.search);
   const surface = parameters.get("surface") === "hud";
   const statistics = parameters.get("window") === "statistics";
-  const settings = !surface && !statistics;
+  const mark = parameters.get("window") === "mark";
+  const settings = !surface && !statistics && !mark;
   // The app plans the HUD windows, draws the menu bar and directs the Bots
   // itself. A page listens only while its window is on screen, and reads what
   // it missed when it is back.
@@ -102,24 +112,12 @@ function AppContent({
     discardDraft,
     releaseHold,
   } = useHUDConfig(selectedId, screenContexts, windowActive);
-  const snapshot = useMemo(() => {
-    if (!collectedSnapshot) return null;
-    const draft = store.appDraft as Record<string, any> | null | undefined;
-    const settings = {
-      ...collectedSnapshot.settings,
-      ...(draft?.appearance !== undefined
-        ? { appearance: draft.appearance }
-        : {}),
-      ...(draft?.matchScreen !== undefined
-        ? { appearanceFollowsScreen: draft.matchScreen }
-        : {}),
-      ...(draft?.showMenuBarIcon !== undefined
-        ? { showMenuBarIcon: draft.showMenuBarIcon }
-        : {}),
-    };
-    return { ...collectedSnapshot, settings };
-  }, [collectedSnapshot, store.appDraft, store.sources]);
+  const snapshot = useMemo(
+    () => withAppDraft(collectedSnapshot, store.appDraft),
+    [collectedSnapshot, store.appDraft, store.sources],
+  );
   useRequestDeliveryToasts(snapshot, settings && windowActive);
+  useWebLinks((url) => act("open_link", { url }));
   const botDirections = useBotDirections(surface && windowActive);
   const measured = geometries[selectedId] ?? null;
   const selectedMonitor = monitors.find(
@@ -138,18 +136,14 @@ function AppContent({
   const glowHidden = presentation?.glowHidden ?? false;
   const hudVisible = snapshot?.settings.hudVisible !== false;
   const theme = useWindowTheme(snapshot, store, monitors, surface);
-  const chinese = snapshotLanguage(snapshot) === "zh";
+  // SettingsWindow still takes Chinese or not.
   const sourceMenu = (
-    <SourceMenu
-      chinese={chinese}
-      statistics={statistics}
-      hudVisible={hudVisible}
-      act={act}
-    />
+    <SourceMenu statistics={statistics} hudVisible={hudVisible} act={act} />
   );
   const panelServices: PanelServices = {
     sources: snapshot?.sourcePreferences ?? store.sources,
     ends: surface ? hudEndsLink : undefined,
+    inspect: surface ? hudInspect : undefined,
     openSession: async (session) => {
       try {
         await act("open_session", { id: session.id });
@@ -240,16 +234,19 @@ function AppContent({
             geometry={measured}
             monitors={monitors}
             action={act}
+            updateConfig={updateConfig}
+            demo={demo}
+            guide={guide}
           />
         </PanelServicesProvider>
       ) : null,
     );
+  if (mark) return provide(<MarkWindow theme={theme} />);
   if (statistics)
     return provide(
       <StatisticsWindow
         snapshot={snapshot}
         theme={theme}
-        chinese={chinese}
         act={act}
         windowActive={windowActive}
         demo={demo}
@@ -271,11 +268,11 @@ function AppContent({
     <PanelServicesProvider value={panelServices}>
       <SettingsWindow
         extensionPages={extensionPages}
+        guide={guide}
         agentPlugins={agentPlugins}
         productName={productName}
         version={version}
         theme={theme}
-        chinese={chinese}
         demo={demo}
         sourceMenu={sourceMenu}
         error={error}

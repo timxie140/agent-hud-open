@@ -28,6 +28,9 @@ fn a_balance_reads_as_the_money_format_contract_writes_it() {
     assert_eq!(money_amount(&json!(0.125), "USD"), "$0.12");
     assert_eq!(money_amount(&json!(0.135), "USD"), "$0.14");
     assert_eq!(money_amount(&json!(1e-7), "USD"), "$0.00");
+    assert_eq!(money_amount(&json!(2099.53), "credits"), "2,099.53");
+    assert_eq!(money_amount(&json!(1600), "credits"), "1,600");
+    assert_eq!(money_amount(&json!(12.5), "credits"), "12.5");
 }
 
 #[test]
@@ -100,7 +103,7 @@ fn deepseek_balances_follow_row_visibility_and_order() {
         ]
     });
     let view = |layout: Value| {
-        let list = configured(&snapshot, "simple", &layout, 0);
+        let list = configured(&snapshot, "simple", &layout, 0, false);
         let vendor = list
             .into_iter()
             .find(|vendor| vendor.key == "deepseek")
@@ -120,6 +123,111 @@ fn deepseek_balances_follow_row_visibility_and_order() {
         view(json!({"blocks":{"api:deepseek":{"hiddenRows":["ds:USD", "ds:CNY"]}}})),
         ("--".into(), "stale".into())
     );
+}
+
+/// Open #91: a window the person hid in the panel kept the HUD number on it.
+#[test]
+fn the_number_leaves_out_the_windows_the_panel_hides() {
+    let row = |window: &str, used: f64, status: &str| {
+        json!({"id": format!("acct:{window}"), "vendor": "antigravity", "name": window,
+            "usedPercent": used, "resetAt": "2099-01-01T00:00:00Z", "status": status,
+            "account": "a@example.com", "accountId": "acct"})
+    };
+    let snapshot = json!({
+        "language": "en", "billing": [], "sessions": [], "approvals": [], "providers": [],
+        "quotas": [row("claude-5h", 100.0, "critical"), row("gemini-5h", 20.0, "normal")]
+    });
+    let view = |layout: Value| {
+        let list = configured(&snapshot, "simple", &layout, 0, false);
+        let vendor = list.into_iter().next().unwrap();
+        (meter_label(&vendor, false), vendor.level.to_owned())
+    };
+    assert_eq!(view(json!({})), ("100%".into(), "critical".into()));
+    assert_eq!(
+        view(json!({"blocks":{"antigravity":{"hiddenRows":["acct:claude-5h"]}}})),
+        ("20%".into(), "normal".into())
+    );
+    assert_eq!(
+        view(json!({"blocks":{"antigravity":{"hiddenAccounts":["acct"]}}})),
+        ("--".into(), "stale".into())
+    );
+}
+
+/// A screen that asks for the shortest window first reads its shortest live
+/// window, not its most used one; without a reported window length it reads
+/// the tightest, as before.
+#[test]
+fn the_number_can_follow_the_shortest_window_first() {
+    let row = |window: &str, used: f64, status: &str, duration: Option<f64>| {
+        json!({"id": format!("acct:{window}"), "vendor": "antigravity", "name": window,
+            "usedPercent": used, "resetAt": "2099-01-01T00:00:00Z", "status": status,
+            "account": "a@example.com", "accountId": "acct",
+            "windowDurationSeconds": duration})
+    };
+    let snapshot = json!({
+        "language": "en", "billing": [], "sessions": [], "approvals": [], "providers": [],
+        "quotas": [
+            row("claude-5h", 80.0, "normal", Some(18_000.0)),
+            row("claude-7d", 90.0, "normal", Some(604_800.0)),
+        ]
+    });
+    let view = |layout: Value, shortest_first: bool| {
+        let list = configured(&snapshot, "simple", &layout, 0, shortest_first);
+        let vendor = list.into_iter().next().unwrap();
+        (meter_label(&vendor, false), vendor.level.to_owned())
+    };
+    assert_eq!(view(json!({}), false), ("90%".into(), "normal".into()));
+    assert_eq!(view(json!({}), true), ("80%".into(), "normal".into()));
+    assert_eq!(
+        view(
+            json!({"blocks":{"antigravity":{"hiddenRows":["acct:claude-5h"]}}}),
+            true
+        ),
+        ("90%".into(), "normal".into())
+    );
+    // The number moves; the level, and every colour with it, stays the
+    // tightest window's, so a spent weekly window still warns.
+    let spent = json!({
+        "language": "en", "billing": [], "sessions": [], "approvals": [], "providers": [],
+        "quotas": [
+            row("claude-5h", 30.0, "normal", Some(18_000.0)),
+            row("claude-7d", 100.0, "critical", Some(604_800.0)),
+        ]
+    });
+    let list = configured(&spent, "simple", &json!({}), 0, true);
+    assert_eq!(meter_label(&list[0], false), "30%");
+    assert_eq!(list[0].level, "critical");
+    // Ties on duration go to the highest used percent.
+    let tied = json!({
+        "language": "en", "billing": [], "sessions": [], "approvals": [], "providers": [],
+        "quotas": [
+            row("claude-5h-a", 60.0, "normal", Some(18_000.0)),
+            row("claude-5h-b", 80.0, "normal", Some(18_000.0)),
+            row("claude-7d", 90.0, "normal", Some(604_800.0)),
+        ]
+    });
+    let list = configured(&tied, "simple", &json!({}), 0, true);
+    assert_eq!(meter_label(&list[0], false), "80%");
+    // No window reports a length: the tightest window stands.
+    let untimed = json!({
+        "language": "en", "billing": [], "sessions": [], "approvals": [], "providers": [],
+        "quotas": [
+            row("claude-5h", 80.0, "normal", None),
+            row("claude-7d", 90.0, "normal", None),
+        ]
+    });
+    let list = configured(&untimed, "simple", &json!({}), 0, true);
+    assert_eq!(meter_label(&list[0], false), "90%");
+    // A stale window never sets the number, however short it is.
+    let stale = json!({
+        "language": "en", "billing": [], "sessions": [], "approvals": [], "providers": [],
+        "quotas": [
+            row("claude-5h", 100.0, "stale", Some(18_000.0)),
+            row("claude-7d", 20.0, "normal", Some(604_800.0)),
+        ]
+    });
+    let list = configured(&stale, "simple", &json!({}), 0, true);
+    assert_eq!(meter_label(&list[0], false), "20%");
 }
 
 #[test]
@@ -165,6 +273,7 @@ fn vendors_follow_the_resting_order_and_a_layout_list() {
         "simple",
         &json!({"hud": {"agents": ["DeepSeek", "Claude Code"]}}),
         now,
+        false,
     );
     let keys: Vec<&str> = named.iter().map(|v| v.key.as_str()).collect();
     // The list picks the marks; without an agent order they keep the resting order.
@@ -174,12 +283,13 @@ fn vendors_follow_the_resting_order_and_a_layout_list() {
         "simple",
         &json!({"hud": {"agents": ["kimi"]}}),
         now,
+        false,
     );
     assert_eq!(unknown.len(), 3);
     // The HUD follows Settings' agent order, the panel's blocks (Open #31); a balance block stands for its
     // agent, and an agent with no block keeps its place after them.
     let keys = |layout: Value| -> Vec<String> {
-        configured(&snapshot, "simple", &layout, now)
+        configured(&snapshot, "simple", &layout, now, false)
             .iter()
             .map(|v| v.key.clone())
             .collect()
@@ -234,6 +344,36 @@ fn a_failed_read_holds_its_last_share_until_the_window_resets() {
     );
 }
 
+/// Open #90: a live window whose reset has passed has started over, so it no
+/// longer sets the number or its level; the next read brings it back.
+#[test]
+fn a_window_past_its_reset_sets_neither_the_number_nor_the_level() {
+    let now = chrono::DateTime::parse_from_rfc3339("2026-11-01T12:00:00Z")
+        .unwrap()
+        .timestamp_millis();
+    let window = |used: f64, status: &str, reset: &str| json!({"vendor": "claude", "usedPercent": used, "status": status, "resetAt": reset});
+    let mark = |quotas: Vec<Value>| {
+        let snapshot = json!({"quotas": quotas, "billing": [], "providers": [], "sessions": []});
+        let vendor = &vendors(&snapshot, "simple", now)[0];
+        (vendor.used, vendor.held, vendor.level.to_owned())
+    };
+    assert_eq!(
+        mark(vec![
+            window(100.0, "critical", "2026-11-01T11:00:00Z"),
+            window(40.0, "normal", "2026-11-01T15:00:00Z"),
+        ]),
+        (Some(40.0), None, "normal".into())
+    );
+    // Only a stale window is current: it is held, in the stale grey.
+    assert_eq!(
+        mark(vec![
+            window(100.0, "critical", "2026-11-01T11:00:00Z"),
+            window(70.0, "stale", "2026-11-03T12:00:00Z"),
+        ]),
+        (None, Some(70.0), "stale".into())
+    );
+}
+
 #[test]
 fn detected_clients_without_readings_keep_their_marks_and_unknown_meter() {
     let now = chrono::DateTime::parse_from_rfc3339("2026-10-23T12:00:00Z")
@@ -268,7 +408,13 @@ fn detected_clients_without_readings_keep_their_marks_and_unknown_meter() {
         assert_eq!(codex.used, None);
         assert!(codex.quotas.is_empty());
         assert_eq!(meter_label(codex, false), "--");
-        let selected = configured(&snapshot, mode, &json!({"hud":{"agents":["codex"]}}), now);
+        let selected = configured(
+            &snapshot,
+            mode,
+            &json!({"hud":{"agents":["codex"]}}),
+            now,
+            false,
+        );
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].key, "openai");
     }
@@ -279,7 +425,12 @@ fn dot_connection_labels_match_the_webview_and_native_window_measurements() {
     let mut snapshot = json!({"language":"en","quotas":[],"billing":[],"sessions":[],
         "providers":[{"id":"dot","detected":true,"enabled":true}],
         "connection":{"dot":{"enabled":true,"running":true,"ready":true,"subscribed":true}}});
-    for (language, label) in [("en", "Connected"), ("zh", "已连接")] {
+    for (language, label) in [
+        ("en", "Connected"),
+        ("zh", "已连接"),
+        ("zh-Hans", "已连接"),
+        ("zh-Hant", "已连接"),
+    ] {
         snapshot["language"] = json!(language);
         let rows = vendors(&snapshot, "simple", 0);
         assert_eq!(rows.len(), 1);
@@ -291,5 +442,49 @@ fn dot_connection_labels_match_the_webview_and_native_window_measurements() {
     assert_eq!(
         meter_label(&vendors(&snapshot, "simple", 0)[0], false),
         "等待 Dot 订阅"
+    );
+}
+
+#[test]
+fn domestic_agent_variants_stay_separate_marks_and_vendors() {
+    let snapshot = json!({
+        "quotas": [
+            {"vendor": "trae", "usedPercent": 10.0, "status": "normal"},
+            {"vendor": "trae-cn", "usedPercent": 20.0, "status": "normal"},
+            {"vendor": "qoder", "usedPercent": 30.0, "status": "normal"},
+            {"vendor": "qoder-cn", "usedPercent": 40.0, "status": "normal"},
+            {"vendor": "qoder-work", "usedPercent": 50.0, "status": "normal"},
+            {"vendor": "codebuddy", "usedPercent": 60.0, "status": "normal"},
+            {"vendor": "codebuddy-cn", "usedPercent": 70.0, "status": "normal"},
+            {"vendor": "zcode", "usedPercent": 80.0, "status": "warning"}
+        ],
+        "billing": [
+            {"vendor": "workbuddy", "amount": 500, "currency": "credits", "level": "normal"},
+            {"vendor": "minimax-code", "amount": 1200, "currency": "credits", "level": "normal"}
+        ],
+        "providers": [{"id": "minimax", "detected": true, "enabled": true}],
+        "sessions": [],
+        "approvals": []
+    });
+    let rows = vendors(&snapshot, "simple", 0);
+    let pairs: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|row| (row.key.as_str(), row.name.as_str()))
+        .collect();
+    assert_eq!(
+        pairs,
+        [
+            ("trae", "TRAE"),
+            ("trae-cn", "TRAE CN"),
+            ("qoder", "Qoder"),
+            ("qoder-cn", "Qoder CN"),
+            ("qoder-work", "QoderWork"),
+            ("codebuddy", "CodeBuddy"),
+            ("codebuddy-cn", "CodeBuddy CN"),
+            ("zcode", "ZCode"),
+            ("workbuddy", "WorkBuddy"),
+            ("minimax-code", "MiniMax Code"),
+            ("minimax", "MiniMax"),
+        ]
     );
 }

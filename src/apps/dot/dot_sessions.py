@@ -16,6 +16,8 @@ def migrate(db):
     db.execute('CREATE TABLE IF NOT EXISTS dot_host (singleton INTEGER PRIMARY KEY CHECK(singleton=1), instance_id TEXT NOT NULL)')
     db.execute('INSERT OR IGNORE INTO dot_host(singleton,instance_id) VALUES(1,?)', ('hud-dot-' + PLATFORM + '-' + uuid.uuid4().hex,))
     columns = {row[1] for row in db.execute('PRAGMA table_info(messages)')}
+    if 'delivery' not in columns:
+        db.execute("ALTER TABLE messages ADD COLUMN delivery TEXT NOT NULL DEFAULT 'queue'")
     if 'origin' not in columns:
         db.execute("ALTER TABLE messages ADD COLUMN origin TEXT NOT NULL DEFAULT 'codex'")
 
@@ -45,7 +47,8 @@ def publish(adapter, params):
         seen.add(identifier)
         safe.append({'id': identifier, 'client': 'codex',
                      'title': str(row.get('title') or 'Codex')[:200],
-                     'state': row.get('state') if row.get('state') in ('running', 'waiting', 'idle') else 'idle'})
+                     'state': row.get('state') if row.get('state') in ('running', 'waiting', 'idle') else 'idle',
+                     'steerable': row.get('steerable') is True})
     with adapter.db() as db:
         db.execute('INSERT INTO dot_sessions(singleton,enabled,checked,sessions,platform) VALUES(1,?,?,?,?) '
                    'ON CONFLICT(singleton) DO UPDATE SET enabled=excluded.enabled,checked=excluded.checked,sessions=excluded.sessions,platform=excluded.platform',
@@ -91,7 +94,7 @@ def inventory(adapter):
     for session in rows:
         session['url'] = 'codex://threads/' + session['id']
     return {'host': {'id':host_id(adapter), 'platform':row['platform'], 'label':'Mac' if row['platform'] == 'macos' else 'Windows'},
-            'sessions': rows, 'deliveryPolicy': 'active Desktop steer; otherwise queued',
+            'sessions': rows, 'deliveryPolicy': 'queue by default; explicit delivery=steer when authorized',
             'freshForSeconds': max(0, REGISTRY_TTL - (adapter.clock() - row['checked']))}
 
 
@@ -102,10 +105,12 @@ def message_id(request_id, host):
     return 'm-dot-' + hashlib.sha256((host + ':' + request_id).encode()).hexdigest()[:32]
 
 
-def send(adapter, target, text, request_id, host):
+def send(adapter, target, text, request_id, host, delivery='queue'):
     from hud_dot import Rejected, canonical, native_reply
     if not isinstance(host, str) or host != host_id(adapter):
         raise Rejected('Wrong HUD host; use the host.id returned by this MCP entry')
+    if delivery not in ('queue', 'steer'):
+        raise Rejected('delivery must be queue or steer')
     target = session_id(target)
     identifier = message_id(request_id, host)
     if not isinstance(text, str) or not text or len(text) > 32000:
@@ -115,15 +120,17 @@ def send(adapter, target, text, request_id, host):
         db.execute('BEGIN IMMEDIATE')
         row = db.execute('SELECT * FROM messages WHERE id=?', (identifier,)).fetchone()
         if row:
-            if row['origin'] != 'dot' or row['source'] != source or row['text'] != text:
+            if row['origin'] != 'dot' or row['source'] != source or row['text'] != text or row['delivery'] != delivery:
                 raise Rejected('request_id already belongs to different content or recipient')
             # A duplicate is receipt-only, including after restart, refusal or timeout.
             return adapter.receipt(identifier)
         offered = inventory(adapter)['sessions']
+        if delivery == 'steer' and not any(row['id'] == target and row.get('steerable') is True for row in offered):
+            raise Rejected('Selected session does not currently support steer; do not fall back to queue')
         if not any(row['id'] == target for row in offered):
             raise Rejected('Choose an existing session returned by hud_list_sessions')
-        db.execute('INSERT INTO messages(id,source,text,state,created,reply_id,reply_text,native_receipt,origin) '
-                   'VALUES(?,?,?,?,?,?,?,?,?)',
+        db.execute('INSERT INTO messages(id,source,text,state,created,reply_id,reply_text,native_receipt,origin,delivery) '
+                   'VALUES(?,?,?,?,?,?,?,?,?,?)',
                    (identifier, source, text, 'dot_initiated', adapter.clock(), identifier, text,
-                    canonical(native_reply(source, identifier, identifier, text)), 'dot'))
+                    canonical(native_reply(source, identifier, identifier, text)), 'dot', delivery))
     return adapter.wait_native(identifier)

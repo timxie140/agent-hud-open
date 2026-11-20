@@ -2,12 +2,13 @@
 //! It does not parse transcripts, price tokens or decide session state.
 use agent_hud_core::{ProviderDiscovery, SourceRoot};
 mod discovery;
-pub use discovery::discover_at;
+pub use discovery::{discover_at, discover_clients_at};
 mod file_changes;
 pub mod instance;
 pub use file_changes::FileChanges;
 mod accounts;
 pub mod claude_plugin;
+pub mod client_features;
 pub mod clients;
 mod data_folder;
 pub mod deepseek_plugin;
@@ -21,15 +22,59 @@ pub mod local_ipc;
 pub mod local_tools;
 mod navigation;
 mod os;
+#[cfg(target_os = "windows")]
+#[path = "windows/session.rs"]
+pub mod windows_session;
 pub use accounts::{AccountService, CollectionGate, WebSignInDesk};
 pub use navigation::session_url;
 #[cfg(target_os = "macos")]
 pub use os::registered_applications;
 
+/// The processes above `pid` in the same application bundle, nearest first
+/// (none outside a bundle, or on a host without bundles).
+pub fn app_ancestors(pid: u32) -> Vec<u32> {
+    os::app_ancestors(pid)
+}
+
 /// The program client hooks run: this executable, or on Linux the AppImage it
 /// was started from, whose temporary mount changes with every launch (Open #11).
 pub fn launched_executable() -> std::io::Result<std::path::PathBuf> {
     os::launched_executable()
+}
+/// A web page in one of `browsers` (bundle identifiers, the preferred first),
+/// for a page that only works there, such as a Chrome Web Store listing: the
+/// system's browser when it is one of them, else the first one installed,
+/// else the system's browser all the same. Only `https` addresses, as
+/// `NativePlatform::open_link`. A host that cannot name a browser opens the
+/// system's.
+pub fn open_link_in(url: &str, browsers: &[&str]) -> Result<bool, String> {
+    web_link(url)?;
+    let listed = |id: &str| {
+        browsers
+            .iter()
+            .any(|browser| browser.eq_ignore_ascii_case(id))
+    };
+    if !os::default_browser().is_some_and(|id| listed(&id)) {
+        if let Some(browser) = browsers
+            .iter()
+            .find(|browser| os::registered_bundle(browser))
+        {
+            if os::open_url_in_app(browser, url) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(os::open_session_url(url).is_ok())
+}
+
+/// Only an `https` address opens in a browser, so a window's link can never
+/// start a program or open a file.
+fn web_link(url: &str) -> Result<(), String> {
+    let web = url.strip_prefix("https://").is_some_and(|rest| {
+        !rest.is_empty() && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+    });
+    web.then_some(())
+        .ok_or_else(|| "Only https links open in the browser".into())
 }
 /// A client's own command line (`claude`, `codex`), where the account readers
 /// find it: an app's bundled copy as well as one on PATH.
@@ -57,6 +102,9 @@ impl NativePlatform {
     }
     pub fn discover_providers(&self) -> Vec<ProviderDiscovery> {
         discovery::discover(&self.home)
+    }
+    pub fn discover_clients(&self) -> Vec<ProviderDiscovery> {
+        discovery::discover_clients(&self.home)
     }
     pub fn account_service(
         &self,
@@ -177,6 +225,12 @@ impl NativePlatform {
         };
         os::open_session_url(&url)?;
         Ok(true)
+    }
+    /// A web page in the system's browser: only `https` addresses, so a
+    /// window's link can never start a program or open a file.
+    pub fn open_link(&self, url: &str) -> Result<bool, String> {
+        web_link(url)?;
+        Ok(os::open_session_url(url).is_ok())
     }
     /// Brings a client's own app forward, starting it when it is closed, for
     /// a step only the user can take there (allowing Agent HUD's hooks in

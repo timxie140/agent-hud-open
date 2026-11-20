@@ -570,7 +570,7 @@ fn a_quiet_session_in_flight_keeps_its_provider_on_the_live_interval() {
     assert_eq!(
         due_after(facts("claude"), &claude, &state),
         Duration::ZERO,
-        "live: read every 300 s"
+        "live: read every 240 s"
     );
     state.running.insert("claude".into());
     assert_eq!(due_after(facts("claude"), &claude, &state), Duration::ZERO);
@@ -600,6 +600,46 @@ fn only_providers_this_macs_work_moves_wait_for_their_reset() {
         due_after(facts("glm"), &reset_later("glm"), &state),
         Duration::ZERO,
         "an open agent's work is the plans'"
+    );
+}
+
+#[test]
+fn a_deepseek_key_in_another_client_reads_the_balance_with_that_clients_work() {
+    let mut state = control();
+    let mut deepseek = entry(
+        AccountReading::empty("deepseek"),
+        Some("2026-11-18T08:00:00+00:00"),
+        false,
+    );
+    // The last reading ran 90 s ago.
+    deepseek.attempted -= Duration::from_secs(90);
+    deepseek.attempted_ms -= 90_000;
+    let quiet = due_after(facts("deepseek"), &deepseek, &state);
+    assert!(
+        quiet > Duration::from_secs(145) && quiet <= Duration::from_secs(150),
+        "quiet: every 240 s"
+    );
+    state.running.insert("claude".into());
+    let running = due_after(facts("deepseek"), &deepseek, &state);
+    assert!(
+        running > Duration::from_secs(25) && running <= Duration::from_secs(30),
+        "a Claude Code turn running: every 120 s"
+    );
+    state.running.clear();
+    state
+        .finished
+        .insert("pi".into(), chrono::Utc::now().timestamp_millis());
+    assert_eq!(
+        due_after(facts("deepseek"), &deepseek, &state),
+        Duration::ZERO,
+        "a Pi turn ended, with no spread: at once"
+    );
+    // The spread puts the reading after a turn's end off by up to 15 s.
+    deepseek.spread = 60;
+    let staggered = due_after(facts("deepseek"), &deepseek, &state);
+    assert!(
+        staggered > Duration::from_secs(14) && staggered <= Duration::from_secs(15),
+        "{staggered:?}"
     );
 }
 
@@ -829,4 +869,143 @@ fn a_claude_window_left_out_keeps_its_last_reading_while_the_account_stays() {
     // Codex reports its whole inventory.
     assert!(agents::claude::account::PROVIDER.keeps_unreported_windows);
     assert!(!agents::codex::account::PROVIDER.keeps_unreported_windows);
+}
+
+#[test]
+fn naming_an_agents_quota_reading_full_keeps_its_reading_as_before() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = AccountService::with_readers(
+        directory.path().join("home"),
+        directory.path().join("data"),
+        HashSet::new(),
+        CollectionGate::default(),
+        &[],
+    )
+    .unwrap();
+    let mut snapshot = json!({
+        "settings": {"quotaReading": {"claude": "full"}},
+        "providers": [{"id": "claude", "enabled": true, "detected": true}],
+        "sessions": [],
+    });
+    let kept = |service: &AccountService| {
+        let state = service.shared.state.lock().unwrap();
+        state.entries.contains_key("claude") && !state.force.contains("claude")
+    };
+    service
+        .shared
+        .state
+        .lock()
+        .unwrap()
+        .entries
+        .insert("claude", entry(AccountReading::empty("claude"), None, true));
+    // As at launch: the saved `full` is what was read before, not a change.
+    service.update_sources(&snapshot);
+    assert!(kept(&service), "a restored reading stays and is not forced");
+    snapshot["settings"]["quotaReading"] = json!({});
+    service.update_sources(&snapshot);
+    assert!(kept(&service), "full named or not is the same level");
+    snapshot["settings"]["quotaReading"] = json!({"claude": "off"});
+    service.update_sources(&snapshot);
+    let state = service.shared.state.lock().unwrap();
+    assert!(!state.entries.contains_key("claude") && state.force.contains("claude"));
+}
+
+static OFF_READS: AtomicUsize = AtomicUsize::new(0);
+fn counted(_: &dyn agents::Host) -> Result<AccountReading, Unread> {
+    OFF_READS.fetch_add(1, Ordering::SeqCst);
+    Ok(AccountReading::empty("claude"))
+}
+static COUNTED: Provider = Provider::new("claude", counted);
+static COUNTED_ONLY: [&Provider; 1] = [&COUNTED];
+
+#[test]
+fn an_agent_whose_quota_reading_is_off_is_not_read_and_says_so() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = AccountService::with_readers(
+        directory.path().join("home"),
+        directory.path().join("data"),
+        HashSet::new(),
+        CollectionGate::default(),
+        &COUNTED_ONLY,
+    )
+    .unwrap();
+    service.update_sources(&json!({
+        "settings": {"quotaReading": {"claude": "off"}},
+        "providers": [{"id": "claude", "enabled": true, "detected": true}],
+        "sessions": [],
+    }));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let notice = loop {
+        let state = service.shared.state.lock().unwrap();
+        if let Some(entry) = state.entries.get("claude") {
+            break entry.reading.notice.clone();
+        }
+        drop(state);
+        assert!(Instant::now() < deadline, "the off reading arrives");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    service.stop();
+    assert_eq!(notice, Some(agents::account::quota_reading::off_notice()));
+    assert_eq!(OFF_READS.load(Ordering::SeqCst), 0, "the reader never ran");
+}
+
+#[test]
+fn changing_pis_quota_reading_reads_codex_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = AccountService::with_readers(
+        directory.path().join("home"),
+        directory.path().join("data"),
+        HashSet::new(),
+        CollectionGate::default(),
+        &[],
+    )
+    .unwrap();
+    service
+        .shared
+        .state
+        .lock()
+        .unwrap()
+        .entries
+        .insert("codex", entry(AccountReading::empty("codex"), None, true));
+    service.update_sources(&json!({
+        "settings": {"quotaReading": {"pi": "off"}},
+        "providers": [{"id": "codex", "enabled": true, "detected": true}],
+        "sessions": [],
+    }));
+    let state = service.shared.state.lock().unwrap();
+    assert!(!state.entries.contains_key("codex") && state.force.contains("codex"));
+    assert!(!state.force.contains("pi"));
+}
+
+#[test]
+fn changing_cursors_quota_reading_reads_cursor_and_grok_bot_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = AccountService::with_readers(
+        directory.path().join("home"),
+        directory.path().join("data"),
+        HashSet::new(),
+        CollectionGate::default(),
+        &[],
+    )
+    .unwrap();
+    for provider in ["cursor", "grok-bot", "codex"] {
+        service
+            .shared
+            .state
+            .lock()
+            .unwrap()
+            .entries
+            .insert(provider, entry(AccountReading::empty(provider), None, true));
+    }
+    service.update_sources(&json!({
+        "settings": {"quotaReading": {"cursor": "off"}},
+        "providers": [{"id": "cursor", "enabled": true, "detected": true}],
+        "sessions": [],
+    }));
+    let state = service.shared.state.lock().unwrap();
+    for provider in ["cursor", "grok-bot"] {
+        assert!(!state.entries.contains_key(provider), "{provider}");
+        assert!(state.force.contains(provider), "{provider}");
+    }
+    assert!(state.entries.contains_key("codex") && !state.force.contains("codex"));
 }

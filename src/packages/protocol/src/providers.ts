@@ -1,4 +1,5 @@
 // Agents, their signed-in accounts and their balances.
+import type { QuotaReadingLevel } from "./settings.ts";
 
 export interface Provider {
   id: string;
@@ -43,7 +44,14 @@ export interface Provider {
       provider: string;
       sites: { host: string; name: string; signedIn: boolean }[];
     } | null;
+    /** The events whose Agent HUD hook the agent skips until the user allows
+     * it in the agent itself (Codex's hook review). */
+    unreviewedHooks?: string[];
   };
+  /** From Core: the quota reading levels Settings offers the agent, lowest
+   * first, and the one it reads at (agents `quota_reading::choices`). Absent
+   * where the setting would change nothing. */
+  quotaReading?: { choices: QuotaReadingLevel[]; level: QuotaReadingLevel };
   /** Finding an installed/configured client does not imply its data adapter is ported. */
   dataStatus?: "supported" | "account-only" | "detection-only";
   discovery?: {
@@ -53,6 +61,32 @@ export interface Provider {
     /** Non-sensitive evidence categories; never tokens, config contents or personal paths. */
     evidence: string[];
   };
+}
+/** One client as Settings lists it. A command line and a desktop app are
+ * separate clients, so one agent's data (`agent`, a provider's id) can hold
+ * several, each with its own switches; the agent's own id names the one left
+ * over. Clients of one vendor share a `group`; `groupName` is empty for a
+ * group of one. */
+export interface ClientRow {
+  id: string;
+  agent: string;
+  name: string;
+  group: string;
+  groupName: string;
+  detected: boolean;
+  enabled: boolean;
+  /** What the client can do with Agent HUD: live status, requests answered
+   * in the HUD, messages between agents, HUD tools. */
+  features?: ("live" | "answer" | "talk" | "tools")[];
+  /** What the client's calls went through in the last 30 days: the agent's
+   * own sign-in, relays by address, other providers by route; null without
+   * calls. */
+  spends?: ClientSpends | null;
+}
+export interface ClientSpends {
+  own: boolean;
+  relays: string[];
+  routes: string[];
 }
 export interface Account {
   id: string;
@@ -74,6 +108,9 @@ export interface Account {
   warning?: string | null;
   /** From Core: what the client said otherwise. */
   notice?: string | null;
+  /** The clients whose sign-in read this account, by client id: more than
+   * one when one account is signed in to in several and shown once. */
+  readBy?: string[];
   /** Codex's earned usage resets, from the account's rate limits. */
   resetCredits?: ResetCredits | null;
 }
@@ -107,6 +144,9 @@ export interface BillingAccount {
   label: string;
   amount: number;
   currency: string;
+  planCredits?: number | null;
+  rewardCredits?: number | null;
+  resetAt?: string | null;
   notice: string | null;
   /** From Core (Open's AlertPolicy.balanceLevel): critical at or below zero or while the service refuses the balance, warning at or below its currency's line. */
   level?: "normal" | "warning" | "critical";

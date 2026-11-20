@@ -38,7 +38,7 @@ export function DotConnectionBlock({
           color: colors.secondary,
         }}
       >
-        <span>{language === "zh" ? "连接状态" : "Connection"}</span>
+        <span>{language.startsWith("zh") ? "连接状态" : "Connection"}</span>
         <strong role="status" style={{ color: colors.text }}>
           {dotConnectionLabel(snapshot.connection.dot, language)}
         </strong>

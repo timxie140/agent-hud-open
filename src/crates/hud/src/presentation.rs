@@ -30,11 +30,33 @@ const GLOBAL: &[&str] = &[
     "hoverDelayMs",
     "collapseDelayMs",
     "messageFadeSeconds",
+    "clipboardBubble",
+    "clipboardFadeSeconds",
+    "clipboardShortcut",
     "requiresOptionToOpen",
     "openImmediatelyAtTop",
     "animations",
 ];
+/// A display setting's value before the person sets it.
+pub fn global_default(key: &str) -> Option<Value> {
+    DEFAULTS.get(key).cloned()
+}
 const HARDWARE: &[&str] = &["monitorIndex", "hasNotch", "notchWidth", "notchHeight"];
+/// What a screen shows at all, and what its Simple dock leaves at its edge
+/// when idle: only the person sets these, in Settings; they are no part of
+/// the look a tool reads, drafts or restores.
+const PRESENCE: &[&str] = &[
+    "hidden",
+    "hidesInFullScreen",
+    "hidesMessages",
+    "hidesRequests",
+    "hidesFlights",
+    "autoHide",
+    "restStyle",
+    "restBarLength",
+    "restBarThickness",
+    "restBarColor",
+];
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct Saved {
@@ -127,12 +149,13 @@ impl Presentation {
     pub fn new(directory: PathBuf) -> Result<Self, String> {
         let path = directory.join("presentation.json");
         let initialized = path.exists();
-        let saved = if initialized {
+        let mut saved: Saved = if initialized {
             serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
                 .map_err(|e| format!("Display preferences: {e}"))?
         } else {
             Saved::default()
         };
+        live_status::forget_defaults(&mut saved.sources);
         Ok(Self {
             path,
             state: Mutex::new(State {

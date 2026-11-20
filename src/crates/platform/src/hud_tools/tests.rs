@@ -31,6 +31,12 @@ fn each_client_reads_the_skill_from_its_own_folder() {
         folder(Client::Antigravity),
         home.join(".gemini/config/skills")
     );
+    assert_eq!(folder(Client::ZCode), home.join(".zcode/skills"));
+    assert_eq!(folder(Client::WorkBuddy), home.join(".workbuddy/skills"));
+    assert_eq!(folder(Client::Kimi), home.join(".kimi-code/skills"));
+    assert_eq!(folder(Client::Qoder), home.join(".qoder/skills"));
+    assert_eq!(folder(Client::Trae), home.join(".trae/skills"));
+    assert_eq!(folder(Client::TraeCn), home.join(".trae-cn/skills"));
     let defaults = Places::new(&home, &HashMap::from([("DSH_HOME".into(), " ".into())]));
     assert_eq!(defaults.claude, home.join(".claude"));
     assert_eq!(defaults.deepseek, home.join(".dsh"));
@@ -334,4 +340,119 @@ fn antigravity_turns_a_server_back_on_and_counts_a_turned_off_one_as_absent() {
     )
     .unwrap();
     assert_eq!(left, serde_json::json!({"mcpServers": {}}));
+}
+
+#[test]
+fn zcode_places_its_server_under_mcp_servers_with_stdio_type() {
+    let original =
+        r#"{"model":"glm-4.6","mcp":{"servers":{"other":{"type":"stdio","command":"x"}}}}"#;
+    let added = mcp_json::edit_zcode("ZCode", Some(original), Some(Path::new(APP)))
+        .unwrap()
+        .unwrap();
+    assert!(mcp_json::listed_zcode(Some(&added)));
+    let value: Value = serde_json::from_str(&added).unwrap();
+    assert_eq!(value["mcp"]["servers"]["agent-hud"]["type"], "stdio");
+    assert_eq!(value["mcp"]["servers"]["agent-hud"]["command"], APP);
+    assert_eq!(
+        value["mcp"]["servers"]["agent-hud"]["args"],
+        serde_json::json!(["--mcp"])
+    );
+    assert_eq!(value["mcp"]["servers"]["other"]["command"], "x");
+    let removed = mcp_json::edit_zcode("ZCode", Some(&added), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(removed, original);
+    assert!(!mcp_json::listed_zcode(Some(&removed)));
+}
+
+#[test]
+fn trae_and_trae_cn_each_get_the_server_where_their_app_reads_it() {
+    let home = tempfile::tempdir().unwrap();
+    let places = places(home.path());
+    // Each build's app data folder on this OS, where TRAE keeps `User`.
+    let app_data = crate::os::app_support(home.path(), &HashMap::new());
+    let trae = app_data.join("Trae/User/mcp.json");
+    let trae_cn = app_data.join("Trae CN/User/mcp.json");
+    assert_eq!(Client::Trae.settings(&places), Some(trae.clone()));
+    assert_eq!(Client::TraeCn.settings(&places), Some(trae_cn.clone()));
+
+    // TRAE CN's own folder is TRAE CN on this machine. Its server goes in
+    // even before the app first made its `User` folder, and never in a
+    // `.trae/mcp.json`, which TRAE reads only as a project's.
+    fs::create_dir_all(home.path().join(".trae-cn")).unwrap();
+    assert!(Client::TraeCn.present(&places));
+    assert!(Client::TraeCn
+        .set_server(&places, Some(Path::new(APP)))
+        .unwrap());
+    let value: Value = serde_json::from_str(&fs::read_to_string(&trae_cn).unwrap()).unwrap();
+    // In double quotes: TRAE splits an unquoted command at its spaces.
+    assert_eq!(
+        value["mcpServers"]["agent-hud"]["command"],
+        format!("\"{APP}\"")
+    );
+    assert!(!Client::TraeCn
+        .set_server(&places, Some(Path::new(APP)))
+        .unwrap());
+    // An older unquoted entry is quoted.
+    fs::write(
+        &trae_cn,
+        format!(r#"{{"mcpServers":{{"agent-hud":{{"command":"{APP}","args":["--mcp"]}}}}}}"#),
+    )
+    .unwrap();
+    assert!(Client::TraeCn
+        .set_server(&places, Some(Path::new(APP)))
+        .unwrap());
+    let value: Value = serde_json::from_str(&fs::read_to_string(&trae_cn).unwrap()).unwrap();
+    assert_eq!(
+        value["mcpServers"]["agent-hud"]["command"],
+        format!("\"{APP}\"")
+    );
+    assert!(Client::TraeCn.listed(&places) && !Client::Trae.listed(&places));
+    assert!(!trae.exists());
+    for project in [".trae/mcp.json", ".trae-cn/mcp.json"] {
+        assert!(!home.path().join(project).exists());
+    }
+    assert!(Client::TraeCn.set_server(&places, None).unwrap());
+    assert!(!Client::TraeCn.listed(&places));
+}
+
+#[test]
+fn pi_and_opencode_get_the_server_where_they_read_it() {
+    let home = tempfile::tempdir().unwrap();
+    let places = places(home.path());
+    fs::create_dir_all(home.path().join(".pi/agent")).unwrap();
+    fs::create_dir_all(home.path().join(".config/opencode")).unwrap();
+    fs::write(
+        home.path().join(".config/opencode/opencode.json"),
+        r#"{"$schema":"https://opencode.ai/config.json","plugin":["x"]}"#,
+    )
+    .unwrap();
+    for client in [Client::Pi, Client::OpenCode] {
+        assert!(client.present(&places));
+        assert!(client.set_server(&places, Some(Path::new(APP))).unwrap());
+        assert!(client.listed(&places));
+        assert!(!client.set_server(&places, Some(Path::new(APP))).unwrap());
+    }
+    let pi: Value =
+        serde_json::from_str(&fs::read_to_string(home.path().join(".pi/agent/mcp.json")).unwrap())
+            .unwrap();
+    assert_eq!(pi["mcpServers"]["agent-hud"]["command"], APP);
+    assert_eq!(
+        pi["mcpServers"]["agent-hud"]["args"],
+        serde_json::json!(["--mcp"])
+    );
+    let opencode: Value = serde_json::from_str(
+        &fs::read_to_string(home.path().join(".config/opencode/opencode.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(opencode["mcp"]["agent-hud"]["type"], "local");
+    assert_eq!(
+        opencode["mcp"]["agent-hud"]["command"],
+        serde_json::json!([APP, "--mcp"])
+    );
+    assert_eq!(opencode["plugin"], serde_json::json!(["x"]));
+    for client in [Client::Pi, Client::OpenCode] {
+        assert!(client.set_server(&places, None).unwrap());
+        assert!(!client.listed(&places));
+    }
 }

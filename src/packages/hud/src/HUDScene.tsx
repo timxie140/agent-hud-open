@@ -1,7 +1,6 @@
 import {
   useEffect,
   useId,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -11,8 +10,8 @@ import { useReducedMotion } from "motion/react";
 import type { Snapshot } from "@agent-hud/protocol";
 export { HUDArtwork as HUDLogo } from "./HUDArtwork";
 import { DockMemory, type Direction } from "./bots/mark-director";
-import { AlertStack } from "./scene/AlertStack";
 import { HUDExpandedSurface } from "./scene/HUDExpandedSurface";
+import { HUDInstructions } from "./scene/HUDInstructions";
 import { HUDMarkStrip } from "./scene/HUDMarkStrip";
 import { FlightLayer } from "./scene/FlightLayer";
 import type { HUDFlightCommand } from "./scene/flight-queue";
@@ -27,31 +26,35 @@ import {
   type HUDNativePointer,
 } from "./scene/useHUDInteraction";
 import { useHUDLayout } from "./scene/useHUDLayout";
+import { usePanelCommand } from "./scene/usePanelCommand";
 import { useDomTyping } from "./scene/useDomTyping";
 import { useEditHold } from "./scene/useEditHold";
 import { useHeldFrame } from "./scene/useHeldFrame";
-import { MeasuringCopy, useMeasured } from "./scene/MeasuringCopy";
+import { MeasuringCopy } from "./scene/MeasuringCopy";
 import { DockEnds } from "./ends/DockEnds";
 import { useDockEnds } from "./ends/useDockEnds";
-import { PanelBody } from "./scene/PanelBody";
+import { useClipEnd, useInspectView } from "./inspect/useClipEnd";
 import { RestingStrip } from "./scene/RestingStrip";
+import { useRest } from "./scene/useRest";
 import { HoverFloor, SceneBackdrop } from "./scene/SceneFloors";
 import { usePanelHandoffs } from "./scene/usePanelHandoffs";
+import { useScenePanel } from "./scene/useScenePanel";
 import { useSceneAlerts } from "./scene/useSceneAlerts";
+import { useGlowColors } from "./scene/useGlowColors";
 import { useStripMetrics } from "./scene/useStripMetrics";
+import { useSceneWidth, useSystemLight } from "./scene/useSceneMeasures";
+import { GuideDock, type HUDGuide } from "./GuideDock";
 import { usePanelServices } from "./PanelContext";
 import type { HUDRect } from "./geometry";
 import { useHoverMachine } from "./hover";
 import {
   defaultHUDConfig,
   HUD_METRICS,
-  statusColor,
   configuredVendors,
   type HUDConfig,
   type HUDDecision,
   type HUDUpdateNotice,
 } from "./model";
-import { snapshotLanguage } from "@agent-hud/ui/format";
 import {
   ListedSessionsContext,
   type StatsTarget,
@@ -106,8 +109,10 @@ export interface HUDSceneProps {
    * panel step gives (Open DemoScriptRunner: island forceOpen/forceCollapse).
    * Each new `sequence` is one order. */
   panelCommand?: { open: boolean; sequence: number };
-  /** The host's recent flights between two agents' marks, oldest first. */
+  /** Recent flights between two agents' marks or from the person's bubble, oldest first. */
   flights?: readonly HUDFlightCommand[];
+  /** The guide's small window beside the resting HUD (GuideDock). */
+  guide?: HUDGuide | null;
 }
 
 /**
@@ -138,6 +143,7 @@ export function HUDScene({
   renderBackdrop,
   panelCommand,
   flights,
+  guide,
 }: HUDSceneProps) {
   const sourceConfig = useMemo(
     () => ({ ...defaultHUDConfig, ...supplied }),
@@ -155,16 +161,19 @@ export function HUDScene({
   const id = useId().replaceAll(":", "");
   const scene = useRef<HTMLElement>(null);
   const dockMemory = useRef(new DockMemory());
-  const [width, setWidth] = useState(720);
+  const width = useSceneWidth(scene);
   const [contentHeight, setContentHeight] = useState<number>(
     HUD_METRICS.defaultPanelHeight,
   );
-  const [systemLight, setSystemLight] = useState(false);
+  const systemLight = useSystemLight();
   const [hovered, setHovered] = useState<string | null>(null);
   const [pinned, setPinned] = useState(false);
   const [pointerInside, setPointerInside] = useState(false);
   const { domTyping, checkDomTyping } = useDomTyping(scene);
-  const typing = Boolean(textFocused || domTyping);
+  // A browser pick, ⌥Z or the markup window closing holds the clip window up,
+  // as typing does.
+  const inspected = useInspectView(pointerInside, ends.setHovered);
+  const typing = Boolean(textFocused || domTyping || inspected.hold);
   const suppressHover = useRef(false);
   const hover = useHoverMachine(config);
   const panelServices = usePanelServices();
@@ -182,25 +191,16 @@ export function HUDScene({
     setPinned,
   });
   const { state, forceOpen, collapse } = hover;
-  useEffect(() => {
-    if (!panelCommand) return;
-    if (!panelCommand.open) {
-      setPinned(false);
-      collapse();
-      return;
-    }
-    // A docked HUD that separates agents opens on its first agent, as a hold does.
-    if (
-      config.mode !== "notch" &&
-      config.separatesAgents &&
-      vendors.length > 0
-    ) {
-      setHovered(vendors[0].key);
-      setPinned(true);
-    }
-    forceOpen();
-  }, [panelCommand?.sequence]);
+  usePanelCommand(panelCommand, {
+    config,
+    vendors,
+    setHovered,
+    setPinned,
+    forceOpen,
+    collapse,
+  });
   const open = hover.open || holdActive;
+  const clip = useClipEnd(config, ends.hovered, open, inspected);
 
   const safeSceneHeight = Math.max(180, height);
   const screen = { width, height: safeSceneHeight };
@@ -239,17 +239,7 @@ export function HUDScene({
       onBotLooked?.(config.separatesAgents && hovered ? [hovered] : null);
   }, [open, hovered, config.separatesAgents]);
 
-  // Paused detection draws the still grey rim, as no readings do.
-  const detectionPaused = Boolean(snapshot.status?.paused);
-  const glowColors = useMemo(
-    () =>
-      detectionPaused
-        ? []
-        : vendors
-            .filter((vendor) => vendor.used != null)
-            .map((vendor) => statusColor(vendor.level)),
-    [vendors, detectionPaused],
-  );
+  const glowColors = useGlowColors(vendors, snapshot);
   const metrics = useStripMetrics(
     config,
     vendors,
@@ -264,8 +254,10 @@ export function HUDScene({
       silenced: glowHidden || Boolean(snapshot.status?.paused),
       underPointer,
       open,
-      ends,
+      ends: { ...ends, clipOpen: clip.viewing },
     });
+  const endView = clip.viewing ? "clip" : news.ends.view;
+  const counts = { ...endCounts, clip: clip.shown ? 1 : 0 };
 
   const {
     edge,
@@ -312,7 +304,34 @@ export function HUDScene({
     event,
     inUsagePanel,
     requestsCount: requests.length,
-    ends: { view: news.ends.view, counts: endCounts },
+    ends: { view: endView, counts },
+  });
+
+  // A Simple dock that rests folds while nothing needs it.
+  const rest = useRest({
+    config,
+    strip,
+    edge,
+    screen,
+    metrics,
+    vendors,
+    light,
+    reduceMotion,
+    gate: {
+      open: open || pinned || state.phase !== "collapsed",
+      pointerInside,
+      cardVisible,
+      alert:
+        Boolean(request || event || requests.length) ||
+        vendors.some((vendor) => vendor.waiting > 0),
+      ends:
+        Boolean(endView) ||
+        ends.flights.length > 0 ||
+        Object.values(counts).some(Boolean),
+      dragging: Boolean(dragVisual || dragPreview),
+      guide: Boolean(guide),
+      typing,
+    },
   });
 
   const { heldFrame, trackPointer } = useHeldFrame({
@@ -324,23 +343,6 @@ export function HUDScene({
     nativePointer,
     scene,
   });
-
-  useEffect(() => {
-    const media = window.matchMedia("(prefers-color-scheme: light)");
-    const change = () => setSystemLight(media.matches);
-    change();
-    media.addEventListener("change", change);
-    return () => media.removeEventListener("change", change);
-  }, []);
-  useLayoutEffect(() => {
-    if (!scene.current) return;
-    setWidth(Math.max(360, scene.current.getBoundingClientRect().width));
-    const observer = new ResizeObserver((entries) =>
-      setWidth(Math.max(360, entries[0].contentRect.width)),
-    );
-    observer.observe(scene.current);
-    return () => observer.disconnect();
-  }, []);
 
   const {
     vendorUnderPointer,
@@ -386,7 +388,7 @@ export function HUDScene({
     onConfigure,
     onStats,
     onEscape: endHold,
-    ends: { showing: Boolean(news.ends.view), hovered: ends.hovered },
+    ends: { showing: Boolean(endView), hovered: ends.hovered },
   });
 
   const { openSettings, listedSessions, footer } = usePanelHandoffs({
@@ -398,73 +400,30 @@ export function HUDScene({
     showPanelStats,
     onUpdate,
   });
-  const eventContent =
-    request || event ? (
-      <AlertStack
-        requests={requests}
-        request={request}
-        event={event}
-        news={news}
-        decide={onRequestDecision}
-        openSettings={openSettings}
-        onStats={showPanelStats}
-        handoff={handoff}
-        light={light}
-        snapshot={snapshot}
-        botLogos={config.botLogos}
-      />
-    ) : null;
-
-  // The panel's body, drawn by the visible panel and by the hidden copy
-  // below, which measures its natural height (no `maxHeight`) over the
-  // snapshot it last drew.
-  const panelBody = (shown: Snapshot, maxHeight?: number) => (
-    <PanelBody
-      snapshot={shown}
-      maxHeight={maxHeight}
-      alertStack={eventContent}
-      inUsagePanel={inUsagePanel}
-      event={event}
-      open={open}
-      config={config}
-      focusVendor={focusedVendor?.name}
-      light={light}
-      footer={footer}
-      update={update}
-      dismissNews={news.dismiss}
-      delivery={delivery}
-    />
-  );
-  // The hidden copy measures the panel for its next opening, as the native
-  // hosting view measured its fitting size. A pointer move never draws it
-  // again, and at rest (collapsed, no card out, the pointer away) neither does
-  // a data update: it keeps the snapshot it last drew and catches up as the
-  // pointer arrives, the panel opens or a card comes out.
-  const measuring =
-    open ||
-    state.phase !== "collapsed" ||
-    pointerInside ||
-    Boolean(request || event);
-  const configKey = useMemo(() => JSON.stringify(config), [config]);
-  // What the copy draws, taken when something it shows changes.
-  const measured = useMeasured(
+  const { panelBody, measured } = useScenePanel({
     snapshot,
-    panelServices,
-    listedSessions,
-    measuring,
-    [
-      configKey,
-      light,
-      open,
-      focusedVendor?.name,
-      request,
-      event,
-      news.queue,
-      news.ends.view === "tail" ? news.ends.tail : news.ends.view,
-      inUsagePanel,
-      delivery,
-    ],
-  );
+    config,
+    clip,
+    light,
+    handoff,
+    requests,
+    request,
+    event,
+    news,
+    decide: onRequestDecision,
+    openSettings,
+    onStats: showPanelStats,
+    inUsagePanel,
+    open,
+    phase: state.phase,
+    pointerInside,
+    focusedVendor,
+    footer,
+    update,
+    delivery,
+    services: panelServices,
+    listed: listedSessions,
+  });
   return (
     <HUDGroundProvider look={config}>
       <ListedSessionsContext.Provider value={listedSessions}>
@@ -474,6 +433,7 @@ export function HUDScene({
           data-mode={config.mode}
           data-edge={edge}
           data-hover={state.phase}
+          data-open={open}
           data-pinned={pinned}
           data-appearance={light ? "light" : "dark"}
           aria-label={`Agent HUD ${config.mode === "notch" ? "Classic" : "Simple"} preview`}
@@ -578,6 +538,7 @@ export function HUDScene({
             vendorUnderPointer={vendorUnderPointer}
             hovered={hovered}
             pin={pin}
+            rest={rest}
           >
             <HUDMarkStrip
               id={id}
@@ -601,24 +562,24 @@ export function HUDScene({
               dockMemory={dockMemory}
               nativePointer={nativePointer}
               reduceMotion={reduceMotion}
-              hasAlert={Boolean(request || event)}
-              suppressHover={suppressHover}
               setHovered={setHovered}
               forceOpen={forceOpen}
               pin={pin}
+              rest={rest}
             />
           </RestingStrip>
           <DockEnds
             ends={ends}
             geometry={endRects}
-            counts={endCounts}
+            counts={counts}
             fade={news.ends.fade}
+            clip={clip}
             config={config}
             edge={edge}
             strip={strip}
             frame={frame}
             cardVisible={cardVisible}
-            showing={Boolean(news.ends.view)}
+            showing={Boolean(endView)}
             dragging={dragging}
             light={light}
             fill={fill}
@@ -633,20 +594,27 @@ export function HUDScene({
             forceOpen={forceOpen}
           />
           <FlightLayer
-            flights={flights}
+            flights={config.hidesFlights ? undefined : flights}
             mode={config.mode}
             edge={edge}
             strip={strip}
+            clipEnd={endRects.clip}
             scene={scene}
             botLogos={config.botLogos}
             reduceMotion={reduceMotion}
             light={light}
           />
-          <span id={`hud-instructions-${id}`} className="sr-only">
-            {snapshotLanguage(snapshot) === "zh"
-              ? "悬停展开。在分开显示的模式下，点按一个智能体打开它的完整面板。"
-              : "Hover to expand. In separated agent mode, click an agent to open its full panel."}
-          </span>
+          <GuideDock
+            guide={guide}
+            open={open}
+            hidden={Boolean(dragVisual) || cardVisible}
+            edge={edge}
+            strip={strip}
+            screen={screen}
+            light={light}
+            reduceMotion={reduceMotion}
+          />
+          <HUDInstructions id={`hud-instructions-${id}`} />
         </section>
       </ListedSessionsContext.Provider>
     </HUDGroundProvider>

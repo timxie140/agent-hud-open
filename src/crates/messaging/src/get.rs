@@ -4,9 +4,11 @@ use super::*;
 impl Messaging {
     pub(crate) fn get(&mut self, id: &str, host: &Host<'_>, now: i64) -> Result<Value> {
         let clients = self.clients.clone();
-        let zh = language(host.snapshot);
+        let language = language(host.snapshot);
         let Some(message) = self.journal.find(id).cloned() else {
-            return Ok(json!({"id":id,"state":"unknown","reason":words::unknown_message(zh)}));
+            return Ok(
+                json!({"id":id,"state":"unknown","reason":words::unknown_message(language)}),
+            );
         };
         let mut message = message;
         if message.to.client == "dot" {
@@ -37,6 +39,15 @@ impl Messaging {
                 }
             }
         }
+        // An answer thrown back earlier, which the session's later turn hides now.
+        if answer.is_null() && !matches!(state.as_str(), "refused") {
+            if let Some((text, ended)) = self.answers.get(&message.id) {
+                state = "done".into();
+                answer = Value::String(text.to_owned());
+                ended_at = ended.cloned().unwrap_or(Value::Null);
+                reason = None;
+            }
+        }
         // Answered with send_message: the reply is on its way as a message of
         // its own. Its words are not kept, so only its id is given.
         // A turn that ended with nothing to read says less than the reply.
@@ -46,11 +57,11 @@ impl Messaging {
             .filter(|_| state != "done" || answer.is_null())
         {
             state = "replied".into();
-            reason = Some(words::replied(zh, reply));
+            reason = Some(words::replied(language, reply));
         }
         if state == "taken" || state == "queued" {
             // A queued message whose session never took it within the plugin's hour.
-            if matches!(message.to.client.as_str(), "claude" | "deepseek")
+            if Provider::parse(&message.to.client).is_some_and(Provider::queues_in_channel)
                 && now - message.sent_at_ms > 3_600_000
             {
                 state = "expired".into();
@@ -61,7 +72,7 @@ impl Messaging {
             message.reason = reason.clone();
             self.journal.replace(message.clone());
         }
-        let to = find(host.snapshot, &message.to.session_id);
+        let to = find_in(host.snapshot, &message.to.client, &message.to.session_id);
         Ok(json!({
             "id": message.id,
             "state": state,

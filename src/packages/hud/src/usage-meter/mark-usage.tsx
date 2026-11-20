@@ -1,23 +1,20 @@
 /* What a Simple mark draws round and beside its logo: rings, a segmented
  * ring or bars. The HUD strip and Settings' preview both draw marks with
  * these. */
+import type { CSSProperties } from "react";
 import type { PanelLayout } from "@agent-hud/protocol";
 import { quotaPercent, type QuotaDisplay } from "@agent-hud/ui/format";
 import { statusColor, type HUDVendor } from "../model";
 import { simpleRingSpec, type RingStyle } from "./arcs";
-import {
-  markTrack,
-  markWindows,
-  resetPassed,
-  type RingItem,
-} from "./mark-windows";
+import { resetPassed } from "../held-reading";
+import { markTrack, markWindows, type RingItem } from "./mark-windows";
 import { UsageBars } from "./UsageBars";
 import { UsageRing } from "./UsageRing";
 
 export { markTrack, markWindows, type RingItem } from "./mark-windows";
 
 /** Each window as a ring draws it: its share as the panel shows shares, in
- * its level's colour; a held window whose reset has passed starts over at 0. */
+ * its level's colour; a window whose reset has passed starts over at 0. */
 export function markItems(
   vendor: Pick<HUDVendor, "quotas">,
   display: QuotaDisplay | undefined,
@@ -25,10 +22,7 @@ export function markItems(
   now = Date.now(),
 ): RingItem[] {
   return markWindows(vendor, layout, now).map((q) => ({
-    percent:
-      q.status === "stale" && resetPassed(q, now)
-        ? 0
-        : quotaPercent(q.usedPercent, display),
+    percent: resetPassed(q, now) ? 0 : quotaPercent(q.usedPercent, display),
     color: statusColor(q.status),
   }));
 }
@@ -41,6 +35,7 @@ export function MarkRing({
   ringWidth,
   light,
   reduceMotion,
+  styles = { position: "absolute", inset: 0 },
 }: {
   style: RingStyle;
   items: RingItem[];
@@ -48,6 +43,8 @@ export function MarkRing({
   ringWidth: number;
   light: boolean;
   reduceMotion?: boolean;
+  /** Where it sits in the mark: over the whole of it unless told. */
+  styles?: CSSProperties;
 }) {
   return (
     <UsageRing
@@ -56,7 +53,7 @@ export function MarkRing({
       spec={simpleRingSpec(size, ringWidth)}
       track={markTrack(light)}
       reduceMotion={reduceMotion}
-      styles={{ position: "absolute", inset: 0 }}
+      styles={styles}
     />
   );
 }

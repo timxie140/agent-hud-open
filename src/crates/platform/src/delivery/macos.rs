@@ -5,6 +5,10 @@ pub(crate) use super::unix::{command_folders, is_path_key, new_file_options};
 use super::Result;
 use std::path::{Path, PathBuf};
 
+pub(crate) fn discover_codex_per_operation() -> bool {
+    false
+}
+
 /// Where desktop apps are installed: `/Applications` and `~/Applications`.
 pub(crate) fn applications(home: &Path) -> Vec<PathBuf> {
     vec![PathBuf::from("/Applications"), home.join("Applications")]

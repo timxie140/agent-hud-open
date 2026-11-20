@@ -10,6 +10,7 @@ use std::{
 
 mod demo;
 mod log_reminders;
+mod open;
 mod request;
 mod startup;
 #[cfg(test)]
@@ -19,6 +20,7 @@ pub use agent_hud_core::demo::DemoScript;
 pub use agent_hud_core::l10n;
 pub use agent_hud_core::projects;
 pub use agent_hud_core::replies;
+pub use agent_hud_platform::app_ancestors;
 pub use agent_hud_platform::claude_plugin;
 pub use agent_hud_platform::client_executable;
 pub use agent_hud_platform::deepseek_plugin;
@@ -28,9 +30,13 @@ pub use agent_hud_platform::hooks;
 pub use agent_hud_platform::hud_tools;
 pub use agent_hud_platform::instance;
 pub use agent_hud_platform::local_tools;
+pub use agent_hud_platform::open_link_in;
 #[cfg(target_os = "macos")]
 pub use agent_hud_platform::registered_applications;
+#[cfg(target_os = "windows")]
+pub use agent_hud_platform::windows_session;
 pub use agent_hud_platform::CollectionGate;
+pub use open::{open_cached_session, CachedOpen};
 pub use startup::{claim_collector, home_directory, legacy_preferences, local_tools_directory};
 
 pub struct Runtime {
@@ -82,6 +88,8 @@ impl Runtime {
             .observe_local_clients()?;
         core.set_platform(platform.name());
         core.set_provider_discovery(platform.discover_providers());
+        core.set_client_discovery(platform.discover_clients());
+        core.set_client_features(agent_hud_platform::client_features::client_features());
         core.set_claude_desktop_bases(platform.claude_desktop_bases());
         core.set_claude_pids(platform.claude_pids());
         core.set_claude_projects_supported(platform.claude_projects_supported());

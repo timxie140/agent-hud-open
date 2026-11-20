@@ -10,10 +10,12 @@ use std::{
 use tauri::Manager;
 
 mod configure;
+mod depth;
 mod displays;
 mod drag;
 mod input;
 mod plans;
+mod recovery;
 mod screen;
 mod snap;
 mod text_focus;
@@ -23,6 +25,8 @@ mod worker;
 // The native HUD host. macos.rs, windows.rs and linux.rs each provide the same
 // items, and the rest of this folder never branches on the operating system:
 //   GLOBAL_POINTS, COORDINATE_SPACE      how the pointer and geometry are expressed
+//   DOCK_IN_WORK_AREA                    whether an edge HUD keeps clear of the
+//                                          system's own bars (the work area)
 //   native_drag                          whether an edge drag can follow the button
 //   fixed_canvas                         whether the canvas stays put while a drag
 //                                          previews another edge or offset
@@ -34,6 +38,8 @@ mod worker;
 //   set_drag_cursor, global_pointer,     pointer and button state while hovering
 //     left_mouse_down, pointer_keys        or dragging
 //   edge_hud_unsupported                 what this host cannot do
+//   watch_page                           report a page whose process ended, and
+//                                          finished loads (recovery.rs)
 // generic.rs holds the pieces that need only Tauri's own window API; a host
 // re-exports those until it has a native adapter.
 #[cfg(not(target_os = "macos"))]
@@ -49,6 +55,8 @@ mod host;
 mod host;
 
 use configure::{configure, configure_display, emit_geometry};
+pub use depth::hud_set_depth;
+pub(super) use depth::*;
 pub(super) use displays::*;
 pub use displays::{hud_geometry, hud_monitors};
 pub use drag::hud_drag_start;
@@ -83,10 +91,18 @@ struct HudState {
     config: Option<HudConfig>,
     drag: Option<DragState>,
     geometry: Option<HudGeometry>,
+    /// How far the window reaches from its edge, in points, as the page last
+    /// asked (`hud_set_depth`); None is the whole canvas.
+    depth: Option<f64>,
+    /// Whether the page has asked for a depth yet.
+    depth_asked: bool,
+    /// Where the window's top-left lies in the canvas, in points.
+    window_offset: (f64, f64),
     pointer: Option<HudPointer>,
     pointer_emitted_at: Option<Instant>,
     text_focus: Option<String>,
     text_focus_origin: Option<host::TextFocusOrigin>,
+    page: recovery::Page,
 }
 
 impl HudWindows {

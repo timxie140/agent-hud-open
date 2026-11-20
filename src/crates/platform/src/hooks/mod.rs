@@ -9,11 +9,13 @@ use std::{
 
 mod callback;
 mod clients;
+pub use clients::{launches_here, system_name};
 mod completion;
 mod endpoint;
 mod entry;
 mod inbox;
 mod install;
+pub mod mailbox;
 mod statusline_install;
 pub use statusline_install::AntigravityCliChange;
 mod observers;
@@ -22,7 +24,9 @@ mod policy;
 pub use observers::{apply_observer_plan, observer_plan, ObserverPlan};
 mod reminders;
 mod reviewer;
+pub(crate) mod rewake;
 mod statusline;
+mod switches;
 mod transcript;
 mod turn_log;
 // The callback channel: a Unix socket, or a named pipe on Windows.
@@ -34,6 +38,10 @@ mod transport;
 mod transport;
 pub use agent_hud_agents::windows_hook_handler;
 use callback::wait_for_answer;
+
+/// Where a permission hook names the client that asks, among the agent's
+/// clients, for approving automatically (`switches::auto_approve_on`).
+const CLIENT_KEY: &str = "agentHudClient";
 pub(crate) use callback::{handed_event, settles_in_transcript};
 pub use entry::{entry, handle_with_io};
 pub use inbox::{record_delivery, record_event};
@@ -78,7 +86,7 @@ impl Hooks {
             antigravity: None,
             deepseek: None,
             deepseek_plugin: None,
-            clients: clients::Clients::default(),
+            clients: clients::Clients::with_channel(data.join("hook-channel")),
             data,
             requests,
             reminders: reminders::Reminders::default(),

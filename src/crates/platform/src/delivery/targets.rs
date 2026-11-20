@@ -62,7 +62,22 @@ impl LocalClients {
                 automatic_installation: false,
                 notice: "Requires Agent HUD's plugin loaded in the DeepSeek Harness host. Input joins the session's own queue; slash commands are refused. Cancellation requires a plugin acknowledgement.".into(),
             },
+            hook_capability(Provider::Cursor),
+            hook_capability(Provider::Trae),
+            hook_capability(Provider::WorkBuddy),
+            hook_capability(Provider::ZCode),
+            hook_capability(Provider::Qoder),
+            hook_capability(Provider::Kimi),
+            hook_capability(Provider::Pi),
+            hook_capability(Provider::OpenCode),
         ]
+    }
+    /// Whether DeepSeek Harness session `session_id` runs a plugin that takes
+    /// a steer; an older one refuses it until Harness restarts.
+    pub fn deepseek_takes_steer(&self, session_id: &str) -> bool {
+        self.deepseek
+            .as_ref()
+            .is_some_and(|channel| channel.takes_steer(session_id))
     }
     pub fn targets(&self, now: SystemTime) -> Vec<ReachableTarget> {
         let loaded = ClaudeChannel::new(self.paths.claude_channel.clone()).loaded(now);
@@ -96,6 +111,10 @@ impl LocalClients {
                         None
                     }
                     Provider::Antigravity => Some(false),
+                    provider if provider.uses_hook_channel() => {
+                        Some(valid_session_id(provider, &target.session_id))
+                    }
+                    _ => Some(false),
                 };
                 let notice = match target.provider {
                     Provider::Claude if reachable == Some(true) => {
@@ -112,6 +131,25 @@ impl LocalClients {
                     Provider::Antigravity => {
                         "Known cascade; local language server availability is verified at submission"
                     }
+                    provider
+                        if provider.uses_observer()
+                            && self.hook_waiting(provider, &target.session_id) =>
+                    {
+                        "Agent HUD's observer in the session hands it over at once, even while the session is idle"
+                    }
+                    provider if provider.uses_observer() => {
+                        "Waits until the session is open in its client again, whose Agent HUD observer then hands it over"
+                    }
+                    provider
+                        if provider.uses_hook_channel()
+                            && self.hook_waiting(provider, &target.session_id) =>
+                    {
+                        "A rewake hook waits in the session and hands it over at once, even while the session is idle"
+                    }
+                    provider if provider.uses_hook_channel() => {
+                        "Waits for the session's own stop hook, which hands it over when one of its turns ends"
+                    }
+                    _ => "Unsupported provider",
                 }
                 .into();
                 ReachableTarget {
@@ -121,5 +159,41 @@ impl LocalClients {
                 }
             })
             .collect()
+    }
+
+    /// Whether a rewake hook waits in the session now (`hooks::rewake`): its
+    /// client then takes a message at once, even while the session is idle.
+    pub fn hook_waiting(&self, provider: Provider, session_id: &str) -> bool {
+        let data = self.deliveries.as_deref().unwrap_or(&self.paths.receipts);
+        if provider.uses_observer() {
+            return crate::hooks::mailbox::standing(
+                data,
+                provider.as_str(),
+                session_id,
+                SystemTime::now(),
+            );
+        }
+        provider.uses_hook_channel()
+            && hook_session_key(provider, session_id)
+                .is_some_and(|key| crate::hooks::rewake::standing(data, &key))
+    }
+}
+
+fn hook_capability(provider: Provider) -> Capability {
+    let wakes = wakes_idle(provider.as_str());
+    Capability {
+        provider,
+        supported: true,
+        operations: vec![Operation::Automatic, Operation::Enqueue],
+        plugin_preparation: false,
+        automatic_installation: true,
+        notice: if provider.uses_observer() {
+            "Queues input for Agent HUD's observer in the client, which hands it to the session as its next prompt at once while the session is open, even when it is idle; a session that is not open takes it once it is opened again."
+        } else if wakes {
+            "Queues input for the session's own hooks: a rewake hook waiting in the session hands it over at once, even while it is idle; otherwise its stop hook hands it over when one of its turns ends."
+        } else {
+            "Queues input for the session's own stop hook, which hands it over as the next input when one of its turns ends; an idle session takes it only after its next turn."
+        }
+        .into(),
     }
 }

@@ -1,6 +1,11 @@
 //! A page of a session's transcript: its messages from the live log, or from
 //! the tail of a compressed archive.
 use super::*;
+use crate::l10n::tr;
+
+mod archive_tail;
+
+pub(super) use archive_tail::archive_tail;
 
 /// A row of a page as the apps read it.
 fn row(item: LineItem) -> Value {
@@ -14,21 +19,23 @@ fn row(item: LineItem) -> Value {
 pub(crate) fn page(
     path: &Path,
     source: &str,
+    id: &str,
     cursor: u64,
     limit: usize,
     tail: bool,
     archives: &mut compressed::Archives,
     contexts: &mut Contexts,
 ) -> Result<Value, String> {
-    if source_db::accepts(path, source) {
-        return Err(l10n::text("此来源的压缩日志不支持分页查看消息；用量和调用仍可查看", "Message paging is not available for this compact source; usage and calls remain available"));
+    // ZCode keeps every session's messages in one database; a page is a run
+    // of them in order (`agents::zcode::conversation`), its cursor a place.
+    if source == "zcode" {
+        return database_page(path, source, id, cursor, limit, tail);
     }
-    let metadata = fs::metadata(path).map_err(|_| {
-        l10n::text(
-            "所选会话的日志不可用",
-            "The selected session transcript is unavailable",
-        )
-    })?;
+    if source_db::accepts(path, source) {
+        return Err(tr!("Message paging is not available for this compact source; usage and calls remain available"));
+    }
+    let metadata =
+        fs::metadata(path).map_err(|_| tr!("The selected session transcript is unavailable"))?;
     let stamp = FileStamp {
         source: "conversation",
         length: metadata.len(),
@@ -59,12 +66,7 @@ pub(crate) fn page(
     if archive
         && !archives
             .prepare(path, stamp, cursor, &mut budget)
-            .map_err(|_| {
-                l10n::text(
-                    "无法解码所选会话的日志",
-                    "Could not decode the selected session transcript",
-                )
-            })?
+            .map_err(|_| tr!("Could not decode the selected session transcript"))?
     {
         return Ok(
             json!({"messages":[],"messageCursor":cursor,"nextMessageCursor":cursor,"messagesPending":true,"messagesComplete":false}),
@@ -74,12 +76,8 @@ pub(crate) fn page(
     if archive {
         file = None;
     } else {
-        let mut opened = File::open(path).map_err(|_| {
-            l10n::text(
-                "无法读取所选会话的日志",
-                "Could not read the selected session transcript",
-            )
-        })?;
+        let mut opened =
+            File::open(path).map_err(|_| tr!("Could not read the selected session transcript"))?;
         opened
             .seek(SeekFrom::Start(cursor))
             .map_err(|_| "Invalid transcript cursor")?;
@@ -103,12 +101,8 @@ pub(crate) fn page(
     let mut messages = Vec::new();
     let mut complete = false;
     while budget > 0 && (tail || messages.len() < limit) {
-        let (bytes, count, ended) = line(reader).map_err(|_| {
-            l10n::text(
-                "无法读取所选会话的日志",
-                "Could not read the selected session transcript",
-            )
-        })?;
+        let (bytes, count, ended) =
+            line(reader).map_err(|_| tr!("Could not read the selected session transcript"))?;
         if count == 0 || !ended {
             complete = true;
             break;
@@ -145,112 +139,56 @@ pub(crate) fn page(
     )
 }
 
-/// How much of a transcript's end a tail page reads.
-pub(super) const TAIL: u64 = 2 * 1024 * 1024;
-
-/// A tail page of a compressed transcript (every DeepSeek Harness log, a
-/// cold Codex rollout): the page a plain transcript of the same text gives.
-/// Compressed text has no seek, so it is decoded once from its start; the
-/// lines before the last `TAIL` bytes are only looked at for the turn they
-/// leave open. Text longer than the tail plus `reach`, as far back as a
-/// plain tail looks for its turn, is not read: each look decodes it all.
-pub(super) fn archive_tail(
+/// A page of a session whose messages a database holds (ZCode): `cursor` is
+/// a message's place, and a tail page is the last `limit` messages.
+fn database_page(
     path: &Path,
     source: &str,
+    id: &str,
+    cursor: u64,
     limit: usize,
-    contexts: &mut Contexts,
-    reach: u64,
+    tail: bool,
 ) -> Result<Value, String> {
-    let undecodable = || {
-        l10n::text(
-            "无法解码所选会话的日志",
-            "Could not decode the selected session transcript",
-        )
-    };
-    let file = File::open(path).map_err(|_| {
-        l10n::text(
-            "无法读取所选会话的日志",
-            "Could not read the selected session transcript",
-        )
-    })?;
-    let mut decoder = zstd::stream::read::Decoder::new(file).map_err(|_| undecodable())?;
-    decoder.window_log_max(27).map_err(|_| undecodable())?; // As `Archives` reads.
-    let mut reader = BufReader::with_capacity(64 * 1024, decoder);
+    use agent_hud_agents::zcode::conversation;
+    let unreadable = || tr!("Could not read the selected session transcript");
+    let database =
+        agent_hud_agents::sqlite::ReadOnlyDatabase::open(path).map_err(|_| unreadable())?;
+    let read = if tail {
+        conversation::last_messages(&database.connection, id, limit)
+    } else {
+        conversation::messages(&database.connection, id, cursor, limit)
+    }
+    .map_err(|_| unreadable())?;
     let rule = turns::of(source);
-    // The turn open before the first line kept, and the lines that may yet
-    // fall within the tail, each with where it starts.
+    let reader_items = items::of(source);
     let mut context = Context {
         path: path.into(),
-        ..Context::default()
+        cursor,
+        turn_id: None,
+        started: None,
     };
-    let mut kept = VecDeque::<(u64, Vec<u8>)>::new();
-    let pass = |context: &mut Context, bytes: &[u8]| {
-        if bytes.len() <= MAX_LINE && (rule.may_name)(bytes) {
-            if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
-                context.read(rule, &value);
-            }
-        }
-    };
-    let mut position = 0;
-    let mut length = 0;
-    loop {
-        let (bytes, count, ended) = match line(&mut reader) {
-            Ok(read) => read,
-            // A frame still being written: the text ends where it begins.
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(_) => return Err(undecodable()),
-        };
-        length = position + count;
-        if count == 0 || !ended {
-            break;
-        }
-        if length > reach + TAIL {
-            return Err(l10n::text(
-                "所选会话的压缩日志太长，无法从末尾查看消息",
-                "The selected session's compressed transcript is too long to page from its end",
-            ));
-        }
-        kept.push_back((position, bytes));
-        position = length;
-        // A line that starts a whole tail before what is read so far lies
-        // before the tail.
-        while kept
-            .front()
-            .is_some_and(|(start, _)| start + TAIL < position)
-        {
-            let (_, bytes) = kept.pop_front().unwrap();
-            pass(&mut context, &bytes);
-        }
-    }
-    // A plain tail starts `TAIL` before the end, after the line holding that
-    // byte.
-    let cursor = length.saturating_sub(TAIL);
-    while cursor > 0 && kept.front().is_some_and(|(start, _)| *start <= cursor) {
-        let (_, bytes) = kept.pop_front().unwrap();
-        pass(&mut context, &bytes);
-    }
-    let reader_items = items::of(source);
     let mut messages = Vec::new();
-    for (start, bytes) in kept {
-        if bytes.len() > MAX_LINE {
-            continue;
-        }
-        if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
-            context.read(rule, &value);
-            for item in (reader_items.read)(&value, start) {
-                let mut entry = row(item);
-                entry["turnId"] = json!(context.turn_id);
-                entry["turnStartedAt"] = json!(context.started);
-                messages.push(entry);
-            }
-            if messages.len() > limit {
-                messages.drain(..messages.len() - limit);
-            }
+    let first = read.lines.first().map_or(read.next, |(place, _)| *place);
+    for (place, value) in &read.lines {
+        context.read(rule, value);
+        for item in (reader_items.read)(value, *place) {
+            let mut entry = row(item);
+            entry["turnId"] = json!(context.turn_id);
+            entry["turnStartedAt"] = json!(context.started);
+            messages.push(entry);
         }
     }
-    context.cursor = position;
-    contexts.keep(context);
-    Ok(
-        json!({"messages":messages,"messageCursor":cursor,"nextMessageCursor":position,"endMessageCursor":position,"messagesTruncatedBefore":cursor>0,"messagesPending":false,"messagesComplete":true}),
-    )
+    let start = if tail { first } else { cursor };
+    Ok(json!({
+        "messages":messages,
+        "messageCursor":start,
+        "nextMessageCursor":(tail || !read.complete).then_some(read.next),
+        "endMessageCursor":read.next,
+        "messagesTruncatedBefore":tail && read.earlier,
+        "messagesPending":false,
+        "messagesComplete":read.complete,
+    }))
 }
+
+/// How much of a transcript's end a tail page reads.
+pub(super) const TAIL: u64 = 2 * 1024 * 1024;

@@ -25,10 +25,14 @@ fn records(db: &Connection, store: &Store) -> Vec<crate::transcript::records::Re
 #[test]
 fn every_client_of_the_database_has_its_store_and_its_own_plugin() {
     let ids = STORES.iter().map(|s| s.agent.id).collect::<Vec<_>>();
-    assert_eq!(ids, ["opencode", "kilo", "mimocode"]);
+    assert_eq!(ids, ["opencode", "kilo", "mimocode", "teleagent"]);
     for client in STORES {
         assert!(std::ptr::eq(store(client.agent.id).unwrap(), client));
-        let observer = client.agent.observer.unwrap();
+        // TeleAgent uses the same database and does not load the OpenCode plugin.
+        let Some(observer) = client.agent.observer else {
+            assert_eq!(client.agent.id, "teleagent");
+            continue;
+        };
         // The plugin is OpenCode's, written for this client's ids and folder
         // and exported the way the client loads it.
         assert!(observer.body.starts_with(observer.marker));
@@ -39,8 +43,9 @@ fn every_client_of_the_database_has_its_store_and_its_own_plugin() {
         assert_eq!(
             observer.body,
             format!(
-                "{}const SOURCE = \"{id}\", FOLDER = \"{id}\";\n{}{export}",
+                "{}const SOURCE = \"{id}\", FOLDER = \"{id}\";\nconst CHANNEL = /*agent-hud:channel*/ null;\n{}{}{export}",
                 observer.marker,
+                include_str!("../hooks/mailbox.js"),
                 include_str!("observer.js"),
                 id = client.agent.id
             ),
@@ -91,6 +96,29 @@ fn opencode_1_and_2_load_the_same_file_and_the_forks_load_it_as_before() {
 }
 
 #[test]
+fn opencode_1_and_2_hand_over_messages_through_one_mailbox() {
+    // Open #114: OpenCode 2's plugin reported turns but never took a
+    // message, which waited in its box until it expired. Both versions now
+    // start the same look (`handOver`); its behaviour is tested against
+    // stand-ins for each version in `observer.test.mjs`.
+    let observer = include_str!("observer.js");
+    let (one, two) = observer.split_at(observer.find("\nfunction setup(ctx)").unwrap());
+    let server = &one[one.find("\nasync function server(input)").unwrap()..];
+    assert!(server.contains("  handOver(mailbox, {\n"));
+    assert!(two.contains("  const stop = handOver(agentHudMailbox(SOURCE), {\n"));
+    assert_eq!(
+        observer.matches("handOver(").count(),
+        3,
+        "defined once, started twice"
+    );
+    // OpenCode 2 marks the prompt a message goes in as, and the turn names
+    // the message by that mark, so every copy of the plugin (one per folder
+    // OpenCode serves) records the same turn.
+    assert!(two.contains("metadata: { agentHud: { message: message.id } }"));
+    assert!(two.contains("message.metadata?.agentHud?.message"));
+}
+
+#[test]
 fn a_turn_recorded_under_opencode_2_is_a_completed_turn_without_a_terminal() {
     // OpenCode 2's plugin runs in its background service, which belongs to no
     // terminal, so its records carry no navigation target.
@@ -106,6 +134,36 @@ fn a_turn_recorded_under_opencode_2_is_a_completed_turn_without_a_terminal() {
     assert_eq!(event.data["outcome"], "completed");
     assert_eq!(event.data["workspace"], "/repo");
     assert_eq!(event.data["navigationTarget"], Value::Null);
+}
+
+#[test]
+fn a_turn_that_took_a_message_names_it_and_carries_its_reply() {
+    let record = json!({
+        "version": 1, "sessionID": "opencode:ses_e5415bdccffe", "workspace": "/repo", "turnID": "msg_1",
+        "startedAtMs": 1_793_885_619_559i64, "completedAtMs": 1_793_885_619_686i64,
+        "delivered": "m-d8776a7228b7", "message": "Done: OC_SENT",
+    });
+    let event = crate::parse_observation("opencode", &record).unwrap();
+    assert_eq!(event.data["delivered"], "m-d8776a7228b7");
+    assert_eq!(event.data["message"], "Done: OC_SENT");
+    // A message id that is not one, and an empty reply, are left out.
+    let record = json!({
+        "version": 1, "sessionID": "opencode:ses_e5415bdccffe", "workspace": "/repo", "turnID": "msg_1",
+        "startedAtMs": 1_793_885_619_559i64, "completedAtMs": 1_793_885_619_686i64,
+        "delivered": "../m", "message": "  ",
+    });
+    let event = crate::parse_observation("opencode", &record).unwrap();
+    assert!(event.data.get("delivered").is_none());
+    assert!(event.data.get("message").is_none());
+    // One that failed ends without an answer, so its sender learns it.
+    let record = json!({
+        "version": 1, "sessionID": "opencode:ses_e5415bdccffe", "workspace": "/repo", "turnID": "msg_1",
+        "startedAtMs": 1_793_885_619_559i64, "completedAtMs": 1_793_885_619_686i64,
+        "delivered": "m-d8776a7228b7", "state": "ended", "stopReason": "error",
+    });
+    let event = crate::parse_observation("opencode", &record).unwrap();
+    assert_eq!(event.data["state"], "ended");
+    assert_eq!(event.data["outcome"], "failed");
 }
 
 #[test]
@@ -202,4 +260,101 @@ fn an_import_table_from_before_message_ids_leaves_its_sessions_out() {
     assert_eq!(read[0].id, "mimocode:s_own");
     // OpenCode names no import tables: the same rows are all its own.
     assert_eq!(records(&db, &STORE).len(), 2);
+}
+
+#[test]
+fn teleagent_reads_each_account_and_its_cached_tokens() {
+    use crate::{Base, Location, Places, Profiles};
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+
+    struct Disk(HashSet<PathBuf>);
+    impl Places for Disk {
+        fn exists(&self, path: &Path) -> bool {
+            self.0.contains(path)
+        }
+        fn same(&self, a: &Path, b: &Path) -> bool {
+            a == b
+        }
+        fn names(&self, folder: &Path) -> Vec<String> {
+            self.0
+                .iter()
+                .filter(|path| path.parent() == Some(folder))
+                .filter_map(|path| path.file_name()?.to_str().map(str::to_owned))
+                .collect()
+        }
+    }
+    let place = Location {
+        base: Base::DataHome,
+        env: &[],
+        folders: &["TeleAgent"],
+        profiles: Some(Profiles::Inside("users")),
+        path: "teleagent.db",
+        not_if: None,
+    };
+    let share = tempfile::tempdir().unwrap();
+    let account = share
+        .path()
+        .join("TeleAgent")
+        .join("users")
+        .join("v1_public_1903017520943529984");
+    let skipped = share
+        .path()
+        .join("TeleAgent")
+        .join("users")
+        .join("not a profile");
+    let disk = Disk(
+        [
+            account.clone(),
+            account.join("teleagent.db"),
+            skipped.clone(),
+            skipped.join("teleagent.db"),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let found = place.resolve(share.path(), &|_| None, &disk);
+    assert!(found
+        .iter()
+        .any(|path| path == &account.join("teleagent.db")));
+    assert!(found
+        .iter()
+        .all(|path| !path.to_string_lossy().contains("not a profile")));
+
+    let db = database(
+        "CREATE TABLE session(id TEXT PRIMARY KEY,title TEXT,directory TEXT,time_archived INTEGER,parent_id TEXT,workspace_id TEXT);
+         CREATE TABLE message(id TEXT PRIMARY KEY,session_id TEXT,time_created INTEGER,data TEXT);
+         INSERT INTO session VALUES('ses_1','调研报告','/work/report',NULL,NULL,'ws');",
+    );
+    db.execute(
+        "INSERT INTO message VALUES('msg_1','ses_1',1,?1)",
+        [json!({
+            "role":"assistant",
+            "finish":"stop",
+            "time":{"created":1_794_389_084_772i64,"completed":1_794_389_090_000i64},
+            "modelID":"chat-pro",
+            "providerID":"NewApi",
+            "tokens":{"input":12,"output":3,"reasoning":1,"cache":{"read":4,"write":2}},
+            "cost":0
+        })
+        .to_string()],
+    )
+    .unwrap();
+    let read = records(&db, &TELEAGENT_STORE);
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].id, "teleagent:ses_1");
+    assert_eq!(read[0].key, "teleagent:msg_1");
+    assert_eq!(read[0].title.as_deref(), Some("调研报告"));
+    assert_eq!(read[0].cwd.as_deref(), Some("/work/report"));
+    assert_eq!(read[0].model, "chat-pro#NewApi");
+    assert_eq!(
+        (
+            read[0].usage.input,
+            read[0].usage.output,
+            read[0].usage.reasoning,
+            read[0].usage.read,
+            read[0].usage.write
+        ),
+        (12, 3, 1, 4, 2)
+    );
 }

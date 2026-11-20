@@ -5,12 +5,16 @@
 // It shares one folder with the app, `config.channel`:
 // - sessions/<session>.json: every open session checks in every 5 seconds;
 // - prompts/<session>/<id>.json: words the app leaves for a session, which
-//   this plugin queues as the session's next message;
+//   this plugin queues as its next message, or steers into its turn;
 // - calls/<host>/<id>.json: which session is calling one of Agent HUD's MCP
 //   tools right now, so the app can tell who called;
 // - asks/<id>.json: a question or approval a session waits on. The HUD may
 //   answer it first, in asks/<id>.answer; whichever answer comes first wins,
 //   and the other side's card goes away.
+//
+// Harness loads this file with agent-hud-inbox.mjs and agent-hud-steer.mjs
+// after it (`SCRIPT` in mod.rs): `inbox` there takes what the app leaves for
+// this host, words for a session and new sessions, and checks the host in.
 //
 // It uses only ctx and Node's own modules: a package import fails outside a
 // profile. A throw that escapes a timer or a promise stops the whole Harness
@@ -25,7 +29,7 @@ export const name = "agent-hud";
 export const inject = ["agents"];
 
 /** The folder layout this file writes; the app reads it as `channelVersion`. */
-export const CHANNEL_VERSION = 1;
+export const CHANNEL_VERSION = 3;
 const CHECK_IN_MS = 5_000;
 const PROMPT_POLL_MS = 1_000;
 const ANSWER_POLL_MS = 250;
@@ -57,7 +61,6 @@ export function start(ctx, channel, options = {}) {
   const checkedIn = new Set();
   const asks = new Map();
   const calls = new Map();
-  const queues = new Map();
   const notes = new Set();
   let stopped = false;
   let answerTimer = null;
@@ -112,6 +115,9 @@ export function start(ctx, channel, options = {}) {
     } catch {}
   };
 
+  // ---- What the app leaves for this host (agent-hud-inbox.mjs) ----
+  const left = inbox({ fs, path, service, read, write, remove, now, quietly, NAME, folder, host, version: CHANNEL_VERSION, desktop: options.desktop, roots: () => roots(), waiting: (id) => [...asks.values()].some((ask) => ask.sessionId === id) });
+
   // ---- Sessions ----
   const agents = () => {
     try {
@@ -144,82 +150,7 @@ export function start(ctx, channel, options = {}) {
       quietly(() => checkIn(agent.id));
     }
     for (const id of [...checkedIn]) if (!open.has(id)) end(id);
-  };
-
-  // ---- Words the app leaves for a session ----
-  const submit = (sessionId, file, prompt) => {
-    const controller = service("sessionController");
-    if (typeof controller?.prompt !== "function") return;
-    const takenAt = now();
-    // Claimed before it is submitted, so a reload never submits it twice.
-    write(file, { takenAt });
-    const became = (what) =>
-      quietly(() => write(file, { takenAt, ...what }));
-    const previous = queues.get(sessionId) ?? Promise.resolve();
-    const next = previous
-      .then(() =>
-        controller.prompt(
-          {
-            requestId: String(prompt.id),
-            sessionId,
-            mode: "queue",
-            content: [{ type: "text", text: prompt.text }],
-          },
-          new AbortController().signal,
-        ),
-      )
-      .then(
-        (result) =>
-          became(
-            result?.accepted === false
-              ? { refused: String(result?.reason ?? "refused") }
-              : { startedAt: now() },
-          ),
-        (error) => became({ refused: String(error?.message ?? error) }),
-      );
-    queues.set(sessionId, next);
-    next.then(() => {
-      if (queues.get(sessionId) === next) queues.delete(sessionId);
-    });
-  };
-  const prompts = () => {
-    for (const agent of roots()) {
-        const dir = folder("prompts", agent.id);
-        let names;
-        try {
-          names = fs.readdirSync(dir).filter((entry) => entry.endsWith(".json"));
-        } catch {
-          continue;
-        }
-        const pending = [];
-        for (const entry of names) {
-          const file = path.join(dir, entry);
-          const prompt = read(file);
-          if (
-            !prompt ||
-            typeof prompt.text !== "string" ||
-            !NAME.test(String(prompt.id)) ||
-            prompt.takenAt !== undefined ||
-            prompt.cancelledAt !== undefined ||
-            prompt.expiredAt !== undefined
-          )
-            continue;
-          pending.push({ file, prompt });
-        }
-        pending.sort(
-          (a, b) =>
-            Number(a.prompt.at) - Number(b.prompt.at) ||
-            String(a.prompt.id).localeCompare(String(b.prompt.id)),
-        );
-        for (const { file, prompt } of pending)
-          quietly(() => {
-            if (fs.existsSync(file.slice(0, -5) + ".cancel"))
-              return write(file, { cancelledAt: now() });
-            if (typeof prompt.expiresAt === "number" && prompt.expiresAt <= now())
-              return write(file, { expiredAt: now() });
-            submit(agent.id, file, prompt);
-          });
-    }
+    quietly(left.checkIn);
   };
 
   // ---- Who calls Agent HUD's MCP tools ----
@@ -309,7 +240,7 @@ export function start(ctx, channel, options = {}) {
     } catch {
       return next();
     }
-    asks.set(id, { kind, questions: (body.questions ?? []).map((q) => q.id), settle });
+    asks.set(id, { kind, sessionId, questions: (body.questions ?? []).map((q) => q.id), settle });
     if (!answerTimer) answerTimer = every(timing.answers, pollAnswers);
     const onAbort = () => settle(undefined);
     original?.addEventListener?.("abort", onAbort, { once: true });
@@ -431,7 +362,8 @@ export function start(ctx, channel, options = {}) {
 
   quietly(checkIns);
   every(timing.checkIn, checkIns);
-  every(timing.prompts, prompts);
+  every(timing.prompts, left.prompts);
+  every(timing.prompts, left.starts);
 
   return {
     /** Ends every timer, and says the sessions here are gone. */
@@ -442,13 +374,15 @@ export function start(ctx, channel, options = {}) {
       timers.clear();
       for (const ask of asks.values()) ask.settle(undefined);
       for (const id of [...checkedIn]) end(id);
+      left.stop();
       for (const note of notes) remove(note);
       notes.clear();
     },
     /** Runs one round of each timer now, for tests. */
     tick() {
       quietly(checkIns);
-      quietly(prompts);
+      quietly(left.prompts);
+      quietly(left.starts);
       quietly(pollAnswers);
     },
   };

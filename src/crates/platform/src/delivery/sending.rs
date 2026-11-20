@@ -44,7 +44,10 @@ impl LocalClients {
                     && (target.session_id == request.session_id
                         || (request.provider == Provider::Antigravity
                             && antigravity_cascade_id(&target.session_id)
-                                == antigravity_cascade_id(&request.session_id)))
+                                == antigravity_cascade_id(&request.session_id))
+                        || (request.provider.uses_hook_channel()
+                            && hook_session_key(request.provider, &target.session_id)
+                                == hook_session_key(request.provider, &request.session_id)))
                     && target.parent_id.is_none()
             })
             .cloned()
@@ -54,6 +57,9 @@ impl LocalClients {
         }
         if request.provider == Provider::DeepSeek {
             self.deepseek()?.check_request(&request, now)?;
+        }
+        if request.provider.uses_hook_channel() {
+            self.hook_channel().check_hook_request(&request)?;
         }
         let mut receipt = Receipt {
             provider: request.provider,
@@ -90,11 +96,31 @@ impl LocalClients {
             Provider::DeepSeek => self
                 .deepseek()
                 .and_then(|channel| channel.leave(&request, now))
-                .map(|state| {
+                .map(|(state, turn)| {
                     receipt.state = state;
+                    receipt.turn_id = turn;
                     receipt.reason = None;
                     receipt.clone()
                 }),
+            Provider::Cursor
+            | Provider::Trae
+            | Provider::WorkBuddy
+            | Provider::ZCode
+            | Provider::Qoder
+            | Provider::Kimi
+            | Provider::Pi
+            | Provider::OpenCode => {
+                // Only the session's own completion hook takes it, when a turn
+                // ends; nothing here reaches into the client.
+                hook_session_key(request.provider, &request.session_id)
+                    .ok_or_else(|| Failure::InvalidInput("identity".into()))
+                    .and_then(|key| self.hook_channel().leave_key(&key, &request, now))
+                    .map(|state| {
+                        receipt.state = state;
+                        receipt.reason = None;
+                        receipt.clone()
+                    })
+            }
         };
         match sent {
             Ok(value) => {
@@ -197,6 +223,18 @@ impl LocalClients {
             Provider::Claude => ClaudeChannel::new(self.paths.claude_channel.clone())
                 .cancel(session_id, request_id)?,
             Provider::DeepSeek => self.deepseek()?.cancel(session_id, request_id)?,
+            Provider::Cursor
+            | Provider::Trae
+            | Provider::WorkBuddy
+            | Provider::ZCode
+            | Provider::Qoder
+            | Provider::Kimi
+            | Provider::Pi
+            | Provider::OpenCode => {
+                let key = hook_session_key(provider, session_id)
+                    .ok_or_else(|| Failure::InvalidInput("identity".into()))?;
+                self.hook_channel().cancel(&key, request_id)?
+            }
             Provider::Codex | Provider::Antigravity => {
                 return Err(Failure::Unsupported("Accepted Codex input cannot be withdrawn; interrupt its exact current turn with a new request identity".into()));
             }
@@ -229,15 +267,22 @@ fn validate(request: &SendRequest) -> Result<()> {
     {
         return Err(Failure::InvalidInput("session/request/text".into()));
     }
-    if request.operation == Operation::Steer
-        && request
-            .expected_turn_id
-            .as_deref()
-            .is_none_or(|id| id.trim().is_empty())
-    {
-        return Err(Failure::InvalidInput(
-            "steer requires expectedTurnId".into(),
-        ));
+    // A steer names the turn it expects, or none: then it goes into the turn
+    // in progress when the client is asked, and is refused when there is none.
+    // Only a client that finds that turn itself takes one naming none.
+    if request.operation == Operation::Steer {
+        match request.expected_turn_id.as_deref() {
+            Some(id) if id.trim().is_empty() => {
+                return Err(Failure::InvalidInput("expectedTurnId".into()))
+            }
+            None if !request.provider.takes_steer() => {
+                return Err(Failure::Unsupported(format!(
+                    "{} sessions take no message into a turn in progress",
+                    request.provider.as_str()
+                )))
+            }
+            _ => {}
+        }
     }
     Ok(())
 }

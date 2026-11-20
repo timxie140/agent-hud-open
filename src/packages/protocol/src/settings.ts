@@ -3,7 +3,8 @@ import type { CustomPrice } from "./prices-relays.ts";
 
 export type ApprovalWaitMinutes = 1 | 3 | 5 | 10 | 30 | 60;
 export interface PanelBlockLayout {
-  /** `rings` are concentric (年轮) and `segments` split one ring (分段环), one
+  /**
+   * `rings` are concentric (年轮) and `segments` split one ring (分段环), one
    * per account; a layout saved before them says `ring`, read as `rings`. */
   widget?: "bar" | "rings" | "segments" | "ring" | "number" | "chart";
   hidden?: boolean;
@@ -79,7 +80,25 @@ export interface SourcePreferences {
   live?: boolean;
   reminders?: boolean;
 }
+/** `off`: no quota; `official`: only the agent's own app; `full`: also other
+ * apps' sign-ins and the vendor's web service. */
+export type QuotaReadingLevel = "off" | "official" | "full";
+
 export interface AppSettings {
+  /** Live status and completion reminders for every client; each client's
+   * own switch holds beneath it. Default on. */
+  liveStatus?: boolean;
+  /** Approval requests and questions answered in the HUD; off, every client
+   * asks by itself. Default on. */
+  answerInHud?: boolean;
+  /** Clients (`ClientRow.id`) whose requests stay with them while answering
+   * in the HUD is on. */
+  answerOff?: string[];
+  /** Permission requests allowed at once, with no card, while answering in
+   * the HUD is on; questions and plans still wait. Default off. */
+  autoApprove?: boolean;
+  /** Clients (`ClientRow.id`) not approved automatically while it is on. */
+  autoApproveOff?: string[];
   /** Display quota percentages as used or available; readings remain usedPercent. */
   quotaDisplay?: "consumed" | "remaining";
   /** Additional Codex CLI homes whose signed-in accounts should be read. */
@@ -96,6 +115,8 @@ export interface AppSettings {
    * while client hooks are on. */
   optInApprovals?: string[];
   readCopilotQuota?: boolean;
+  /** How far each agent's quota may be read, by agent id; one not named reads in full. */
+  quotaReading?: Record<string, QuotaReadingLevel>;
   /** The relay hosts whose balance may be read with the key the client already sends them. */
   relayReading?: string[];
   /** The owner's prices per million tokens, by model as recorded (`model` or `model#route`). */
@@ -123,4 +144,16 @@ export interface AppSettings {
   claudeMessages?: boolean;
   /** Messages may go into DeepSeek Harness sessions through Agent HUD's plugin; on unless turned off. */
   deepseekMessages?: boolean;
+  guide?: GuideRecord;
+}
+/** What the guide knows of this copy, kept by the Settings window and the HUD. */
+export interface GuideRecord {
+  /** When this copy first ran with the guide; 0 for a copy older than it. */
+  since: number;
+  /** The last version whose guide was finished or closed; "" for none. */
+  seen: string;
+  /** The first-run step on screen; "" when no tour is open. */
+  step: string;
+  /** "done" once the Star invitation was taken or closed. */
+  star: string;
 }

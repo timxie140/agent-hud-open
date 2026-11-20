@@ -1,28 +1,27 @@
-import hudDefaults from "@agent-hud/protocol/hud-defaults.json";
+import hudDefaults from "@agent-hud/protocol/hud-defaults.json" with { type: "json" };
 import type {
   PanelLayout,
   RequestDecision,
   Snapshot,
 } from "@agent-hud/protocol";
-import { agentArtworkKey, agentVendorName } from "./agent-artwork";
+import { agentArtworkKey, agentVendorName } from "./agent-artwork.ts";
 import { layoutMarks, restingAgents } from "./resting-agents.ts";
 import { recentLabel, recentUsage } from "./recent-usage.ts";
 import { visibleBalances } from "./balance-rows.ts";
-import { heldUsed } from "./held-reading.ts";
+import { heldUsed, tightestWindow, windowReading } from "./held-reading.ts";
 import { dotConnectionLabel } from "./dot-status.ts";
+import { shownRows } from "./quota-rows.ts";
 import type { GlowEffect, GlowStyle } from "./HUDGlow";
 import type { UsageStyle } from "./usage-meter/arcs";
-import {
-  moneyAmount,
-  snapshotLanguage,
-  quotaPercentLabel,
-  type QuotaDisplay,
-} from "@agent-hud/ui/format";
-export { agentVendorName } from "./agent-artwork";
+import { moneyAmount, snapshotLanguage } from "@agent-hud/ui/format";
+export { agentVendorName } from "./agent-artwork.ts";
 export { agentOrderBlocks } from "./agent-order-blocks.ts";
 
 export type HUDMode = "notch" | "simple";
 export type HUDEdge = "top" | "right" | "bottom" | "left";
+/** What an auto-hidden Simple dock leaves at its edge (`scene/rest.ts`);
+ * `dock`, from an earlier build, leaves the whole dock. */
+export type RestStyle = "dock" | "logos" | "bar" | "hidden";
 export type HUDDecision = RequestDecision;
 
 /** Per-screen placement, with the same defaults and limits as ScreenPlacement.swift. */
@@ -53,13 +52,37 @@ export interface HUDConfig {
   offset: number;
   /** Native runtime display index; this is not a persistent hardware identity. */
   monitorIndex: number;
+  /** This screen has no HUD: no strip, no panel and no cards. */
+  hidden: boolean;
+  /** This screen's HUD shows no message cards and keeps no tail. */
+  hidesMessages: boolean;
+  /** This screen's HUD shows no request cards and keeps no head. */
+  hidesRequests: boolean;
+  /** This screen's HUD plays no flights of messages between agents. */
+  hidesFlights: boolean;
+  /** This screen's HUD hides while an app or video is full screen on it (macOS). */
+  hidesInFullScreen: boolean;
   simpleSize: number;
   simpleGapScale: number;
   ringWidth: number;
   /** How a Simple mark draws its usage: rings, a segmented ring, bars, or the number alone. */
   simpleStyle: UsageStyle;
   showsNumbers: boolean;
+  greyNumbers: boolean;
+  greyNumberOpacity: number;
+  shortestWindowFirst: boolean;
   separatesAgents: boolean;
+  /** Whether a Simple dock hides against its edge while nothing needs it. */
+  autoHide: boolean;
+  /** What an auto-hidden dock leaves at its edge: its logos alone, a bar, or
+   * nothing the eye sees. */
+  restStyle: RestStyle;
+  /** The rest bar's length along the edge and its depth, in points. */
+  restBarLength: number;
+  restBarThickness: number;
+  /** The rest bar's colour: `auto` for the HUD's text colour in its
+   * appearance, else a hex colour. */
+  restBarColor: string;
   appearance: "dark" | "light" | "system";
   solidTransparency: number;
   hoverDelayMs: number;
@@ -67,6 +90,13 @@ export interface HUDConfig {
   /** How often the dock's tail lets its oldest message go, in seconds;
    * 0 keeps them until the person lets them go. */
   messageFadeSeconds: number;
+  /** A bubble at the dock's tail for each copy, which opens the window that
+   * sends copies into a session. */
+  clipboardBubble: boolean;
+  /** How long a copy's bubble stays, in seconds; 0 keeps it. */
+  clipboardFadeSeconds: number;
+  /** Calls the clipboard window up again: `Alt+KeyZ`; empty for none. */
+  clipboardShortcut: string;
   requiresOptionToOpen: boolean;
   openImmediatelyAtTop: boolean;
   sessionList: boolean;
@@ -112,7 +142,7 @@ export function vendorKey(source: string): string {
   return agentArtworkKey(source);
 }
 
-export { restingAgents, sourceID } from "./resting-agents.ts";
+export { clientID, restingAgents, sourceID } from "./resting-agents.ts";
 
 const vendorProjections = new WeakMap<Snapshot, Map<HUDMode, HUDVendor[]>>();
 
@@ -127,13 +157,7 @@ export function vendorsFromSnapshot(
   const value = restingAgents(snapshot, mode).map((name) => {
     const key = vendorKey(name);
     const quotas = snapshot.quotas.filter((q) => vendorKey(q.vendor) === key);
-    const measured = quotas.filter(
-      (q) => q.usedPercent != null && q.status !== "stale",
-    );
-    const tightest = measured.reduce<(typeof measured)[number] | undefined>(
-      (a, b) => (!a || b.usedPercent! > a.usedPercent! ? b : a),
-      undefined,
-    );
+    const tightest = tightestWindow(quotas, now);
     const sessions = snapshot.sessions.filter(
       (s) => vendorKey(s.source) === key,
     );
@@ -195,44 +219,52 @@ export function vendorsFromSnapshot(
   return value;
 }
 
-/** A window's short name, as Core names it (the Swift `shortName`). */
-export function quotaShortName(quota: {
-  name: string;
-  shortLabel?: string;
-}): string {
-  return quota.shortLabel || quota.name;
+/** An agent whose number and level follow the windows the panel shows: a row
+ * the person hid there no longer sets them (Open #91). Its rings already draw
+ * only those (`markWindows`). With the shortest window first, the number
+ * follows that window instead of the tightest; the level does not. */
+function withShownWindows(
+  vendor: HUDVendor,
+  config: HUDConfig,
+  now: number,
+): HUDVendor {
+  const shown = shownRows(vendor.quotas, config.panelLayout);
+  const shortestFirst = followsShortestWindow(config);
+  return shown.length === vendor.quotas.length && !shortestFirst
+    ? vendor
+    : { ...vendor, ...windowReading(shown, now, shortestFirst) };
 }
 
-/** The share a Simple mark's ring and number show: its tightest live window, else the one its last reading holds, drawn grey since its level is then "stale". */
-export function markUsed(vendor: HUDVendor): number | null {
-  return vendor.used ?? vendor.heldUsed;
+/** Whether a screen's numbers follow its shortest window: only where Settings
+ * offers the switch, a Simple dock that writes numbers (HUDSection.tsx). A
+ * Notch, or a dock without numbers, keeps the tightest (screen.rs
+ * `shortest_window_first`). */
+export function followsShortestWindow(
+  config: Pick<
+    HUDConfig,
+    "mode" | "simpleStyle" | "showsNumbers" | "shortestWindowFirst"
+  >,
+): boolean {
+  return (
+    config.shortestWindowFirst &&
+    config.mode === "simple" &&
+    (config.simpleStyle === "numbers" || config.showsNumbers)
+  );
 }
 
-/** The number a Simple HUD writes beside a mark: its tightest window (`markUsed`), else its balance, else its last 24 hours (vendors.rs `meter_label`). */
-export function meterLabel(vendor: HUDVendor, display?: QuotaDisplay): string {
-  const used = markUsed(vendor);
-  return used == null
-    ? (vendor.balance ?? vendor.usage ?? "--")
-    : quotaPercentLabel(used, display);
-}
+export { quotaShortName, markUsed, meterLabel } from "./mark-labels.ts";
 
-export function statusColor(level: HUDVendor["level"]): string {
-  return level === "critical"
-    ? "#ff453a"
-    : level === "warning"
-      ? "#ffd23f"
-      : level === "normal"
-        ? "#3ddc84"
-        : "#8e8e93";
-}
+export { simpleNumberColor, statusColor } from "./mark-colors.ts";
 
 /** HUDAgentOrder.swift: the marks a layout picks, in Settings' agent order; an unavailable list never empties a HUD. */
 export function configuredVendors(
   snapshot: Snapshot,
   config: HUDConfig,
 ): HUDVendor[] {
+  const now = Date.now();
   const available = vendorsFromSnapshot(snapshot, config.mode).map((vendor) => {
-    if (vendor.key !== "deepseek" || vendor.quotas.length) return vendor;
+    if (vendor.quotas.length) return withShownWindows(vendor, config, now);
+    if (vendor.key !== "deepseek") return vendor;
     const rows = snapshot.billing.filter(
       (row) => vendorKey(row.vendor) === vendor.key,
     );

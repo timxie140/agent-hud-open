@@ -11,12 +11,15 @@ mod files;
 pub mod fixtures;
 mod handoffs;
 mod journal;
+pub mod models;
 pub mod process;
+mod provider;
 mod sending;
 mod service;
 mod setup;
 mod starts;
 mod targets;
+pub mod undelivered;
 // What sending and starting need from the operating system: private files
 // and folders, where apps and command lines are installed, and how a client
 // link opens. macOS and Linux share `unix.rs`.
@@ -46,8 +49,10 @@ pub use codex::{
 pub use deepseek::DeepSeekChannel;
 pub use files::atomic_json;
 pub use handoffs::Handoffs;
-use host::private_dir;
+pub use host::private_dir;
 use serde::{Deserialize, Serialize};
+pub use service::hook_session_key;
+use service::valid_session_id;
 pub use starts::{
     ClaudeMove, HandoffCheck, SessionStarts, StartConfig, StartOffer, StartReceipt, StartRequest,
 };
@@ -95,39 +100,17 @@ impl From<std::io::Error> for Failure {
 
 /// Why a message does not go into a Claude Code session: the "Send
 /// messages" switch on its Agent HUD plugin's row is off.
-pub const CLAUDE_MESSAGES_OFF: &str =
-    "Sending messages to Claude Code is off (Settings → Agent plugins)";
+pub const CLAUDE_MESSAGES_OFF: &str = "Sending messages to Claude Code is off (Settings → Agents)";
 /// The same, for a DeepSeek Harness session.
 pub const DEEPSEEK_MESSAGES_OFF: &str =
-    "Sending messages to DeepSeek Harness is off (Settings → Agent plugins)";
+    "Sending messages to DeepSeek Harness is off (Settings → Agents)";
 
-#[derive(Clone, Copy, Debug, Hash, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Provider {
-    Claude,
-    Codex,
-    Antigravity,
-    DeepSeek,
-}
-impl Provider {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Antigravity => "antigravity",
-            Self::DeepSeek => "deepseek",
-        }
-    }
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim() {
-            "claude" => Some(Self::Claude),
-            "codex" => Some(Self::Codex),
-            "antigravity" => Some(Self::Antigravity),
-            "deepseek" => Some(Self::DeepSeek),
-            _ => None,
-        }
-    }
-}
+/// Why a steer that names no turn was refused: the session has no turn in
+/// progress, so nothing was sent.
+pub const NO_TURN_TO_STEER: &str = "No turn is in progress to steer";
+
+pub use provider::Provider;
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PromptForm {
@@ -188,6 +171,11 @@ pub struct SendRequest {
     #[serde(default)]
     pub operation: Operation,
     pub expected_turn_id: Option<String>,
+    /// The model the session runs from these words on, as `list_models`
+    /// names it; none keeps the client's own choice. Only clients that take
+    /// one with a message do (`models::per_message`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -228,6 +216,13 @@ pub struct LocalClients {
     deliveries: Option<PathBuf>,
 }
 
+/// Whether the client with this id hands a session a message even while it
+/// is idle, through a rewake hook waiting in the session (Qoder CLI's).
+pub fn wakes_idle(client: &str) -> bool {
+    Provider::parse(client).is_some_and(Provider::uses_observer)
+        || agent_hud_agents::hooks::hooks_by_id(client).is_some_and(|hooks| hooks.rewake.is_some())
+}
+
 pub(crate) fn valid_name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
@@ -240,17 +235,6 @@ pub(crate) fn valid_uuid(value: &str) -> bool {
 }
 pub(crate) fn antigravity_cascade_id(value: &str) -> &str {
     value.strip_prefix("antigravity:").unwrap_or(value)
-}
-/// A session id each client's delivery takes: Claude Code, Codex and
-/// Antigravity name a session by UUID (the snapshot shows Antigravity's as
-/// `antigravity:<uuid>`); DeepSeek Harness by a name of its own
-/// (`session-<uuid>`, which the snapshot shows as `deepseek:session-<uuid>`).
-pub(crate) fn valid_session_id(provider: Provider, value: &str) -> bool {
-    match provider {
-        Provider::Antigravity => valid_uuid(antigravity_cascade_id(value)),
-        Provider::DeepSeek => deepseek::valid_session(value),
-        Provider::Claude | Provider::Codex => valid_uuid(value),
-    }
 }
 pub(crate) fn millis(now: SystemTime) -> u64 {
     now.duration_since(UNIX_EPOCH)

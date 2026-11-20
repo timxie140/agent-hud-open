@@ -22,10 +22,18 @@ impl SessionStarts {
                 .then_with(|| b["id"].as_str().cmp(&a["id"].as_str()))
         });
         let mut offers = Vec::new();
-        for provider in [Provider::Claude, Provider::Codex, Provider::Antigravity] {
-            if self.executable(provider).is_none()
-                && !(provider == Provider::Antigravity && self.desktop(Provider::Antigravity))
-            {
+        for provider in STARTED {
+            // Each only where it is installed: Antigravity's app alone will
+            // do; Pi and OpenCode need their command line.
+            let offered = match provider {
+                Provider::DeepSeek => self.starts_deepseek(),
+                Provider::Antigravity => {
+                    self.executable(provider).is_some() || self.desktop(provider)
+                }
+                Provider::Pi | Provider::OpenCode => self.command(provider).is_some(),
+                _ => self.executable(provider).is_some(),
+            };
+            if !offered {
                 continue;
             }
             let name = provider.as_str();

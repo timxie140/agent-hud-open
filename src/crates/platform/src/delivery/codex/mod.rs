@@ -4,7 +4,14 @@ use super::*;
 use std::path::Path;
 
 mod desktop;
+#[cfg(all(test, windows))]
+mod desktop_windows_tests;
 mod observed;
+#[cfg(test)]
+mod runtime_policy_tests;
+mod snapshot;
+#[cfg(test)]
+mod snapshot_tests;
 #[cfg(any(test, feature = "fixtures"))]
 pub use observed::fixture as received_input_fixture;
 pub use observed::ReceivedInput;
@@ -16,7 +23,9 @@ mod transport;
 #[cfg(windows)]
 #[path = "windows.rs"]
 mod transport;
-pub(super) use transport::{queue_created, start_in_daemon, OPERATIONS, SUPPORTED};
+pub(super) use transport::{queue_created, start_in_daemon, MODEL_AT_START, OPERATIONS, SUPPORTED};
+mod model_list;
+pub(super) use model_list::{models, thread_start};
 
 /// Host injection point for isolated fixtures or a shared native state adapter.
 pub trait CodexTransport: Send + Sync {
@@ -49,8 +58,21 @@ pub struct NativeCodexTransport {
 #[derive(Clone, Debug)]
 pub struct QueueRoute {
     pub executable: std::path::PathBuf,
+    /// Resolve an automatically discovered runtime at the operation boundary.
+    /// False pins an explicit/custom executable, including isolated fixtures.
+    pub discover_executable: bool,
     pub environment: std::collections::BTreeMap<String, String>,
     pub applications: Vec<std::path::PathBuf>,
+}
+impl QueueRoute {
+    /// After the first child starts, later phases of the same request keep it.
+    pub(crate) fn pinned(&self, executable: &Path) -> Self {
+        Self {
+            executable: executable.into(),
+            discover_executable: false,
+            ..self.clone()
+        }
+    }
 }
 impl CodexTransport for NativeCodexTransport {
     fn received_input(
@@ -83,8 +105,7 @@ fn enqueue_stdio(
     message_id: &str,
     timeout: Duration,
 ) -> Result<()> {
-    let mut server =
-        process::StdioServer::open(&route.executable, data, &route.environment, timeout)?;
+    let mut server = process::StdioServer::open_route(route, data, timeout)?;
     let value = server.mutation(
         "thread/queue/add",
         serde_json::json!({"threadId":thread,"clientUserMessageId":message_id,

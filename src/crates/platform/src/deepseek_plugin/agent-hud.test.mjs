@@ -6,7 +6,20 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { start, apply } from "./agent-hud.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+// The plugin as Harness loads it: agent-hud.mjs with agent-hud-inbox.mjs and
+// agent-hud-steer.mjs after it, as `SCRIPT` in mod.rs joins them.
+const here = path.dirname(fileURLToPath(import.meta.url));
+const joined = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-plugin-module-"));
+fs.writeFileSync(
+  path.join(joined, "agent-hud.mjs"),
+  ["agent-hud.mjs", "agent-hud-inbox.mjs", "agent-hud-steer.mjs"]
+    .map((name) => fs.readFileSync(path.join(here, name), "utf8"))
+    .join(""),
+);
+const { start, apply } = await import(pathToFileURL(path.join(joined, "agent-hud.mjs")).href);
+test.after(() => fs.rmSync(joined, { recursive: true, force: true }));
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(check, ms = 2000) {
@@ -37,7 +50,9 @@ function harness() {
       effects.push(fn());
     },
     get(key) {
-      return key === "sessionController" ? ctx.controller : undefined;
+      if (key === "sessionController") return ctx.controller;
+      if (key === "agentDefaultModel") return ctx.defaults;
+      return key === "workspaceRegistry" ? ctx.workspaces : undefined;
     },
     agents: {
       list: () => [...agents.values()],
@@ -104,7 +119,7 @@ test("open sessions check in, subagents do not, and ended sessions say so", (t) 
   assert.deepEqual(files("sessions"), [`${session}.json`]);
   const checkIn = json("sessions", `${session}.json`);
   assert.equal(checkIn.host, 4242);
-  assert.equal(checkIn.channelVersion, 1);
+  assert.equal(checkIn.channelVersion, 3);
   assert.equal(typeof checkIn.at, "number");
   h.agents.delete(session);
   plugin.tick();
@@ -149,6 +164,239 @@ test("words left for a session are queued through the session controller", async
   assert.equal(typeof json("prompts", session, `${id}.json`).takenAt, "number");
   plugin.tick();
   assert.equal(sent.length, 2, "a taken prompt is never submitted again");
+});
+
+/** Leaves a steer for `session`, as the app does (`leave_steer`). */
+function leaveSteer(channel, id, text) {
+  const dir = path.join(channel, "prompts", session);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, `${id}.json`),
+    JSON.stringify({ id, text, at: 1, expiresAt: Date.now() + 8_000, asUser: false, mode: "steer" }),
+  );
+}
+
+test("a steer goes into the turn in progress and names it", async (t) => {
+  const { h, plugin, channel, json } = setup(t);
+  const agent = { id: session, status: "running", phase: { kind: "running", turn: 7 } };
+  h.agents.set(session, agent);
+  const sent = [];
+  h.ctx.controller = {
+    prompt: async (input) => {
+      sent.push(input);
+      return { accepted: true };
+    },
+  };
+  const id = "aaaaaaaa-bbbb-4ccc-8ddd-000000000001";
+  leaveSteer(channel, id, "Stop: the API is v2 now.");
+  plugin.tick();
+  const done = await until(() => json("prompts", session, `${id}.json`).startedAt && json("prompts", session, `${id}.json`));
+  assert.equal(done.steeredInto, "7");
+  assert.deepEqual(
+    sent.map(({ requestId, sessionId, mode, content }) => [requestId, sessionId, mode, content[0].text]),
+    [[id, session, "steer", "Stop: the API is v2 now."]],
+  );
+});
+
+test("a steer with no turn in progress is refused and never queued instead", async (t) => {
+  const { h, plugin, channel, json } = setup(t);
+  h.agents.set(session, { id: session, status: "idle", phase: { kind: "idle", lastTurn: 7 } });
+  const sent = [];
+  h.ctx.controller = { prompt: async (input) => (sent.push(input), { accepted: true }) };
+  const id = "aaaaaaaa-bbbb-4ccc-8ddd-000000000002";
+  leaveSteer(channel, id, "Stop.");
+  plugin.tick();
+  const done = await until(() => json("prompts", session, `${id}.json`).refused && json("prompts", session, `${id}.json`));
+  assert.equal(done.refused, "No turn is in progress to steer");
+  assert.equal(sent.length, 0, "Harness is never asked: its steer would start a turn");
+});
+
+test("a steer to a session that waits on a question is refused", async (t) => {
+  const { h, plugin, channel, json } = setup(t);
+  h.agents.set(session, { id: session, status: "running", phase: { kind: "running", turn: 3 } });
+  const sent = [];
+  h.ctx.controller = { prompt: async (input) => (sent.push(input), { accepted: true }) };
+  const request = question(new AbortController().signal);
+  h.waterfall("user-questions/request", request, () => new Promise(() => {}));
+  await until(() => fs.readdirSync(path.join(channel, "asks")).length > 0);
+  const id = "aaaaaaaa-bbbb-4ccc-8ddd-000000000003";
+  leaveSteer(channel, id, "Stop.");
+  plugin.tick();
+  const done = await until(() => json("prompts", session, `${id}.json`).refused && json("prompts", session, `${id}.json`));
+  assert.match(done.refused, /approval or a question/);
+  assert.equal(sent.length, 0);
+});
+
+test("a steer to a host with no session controller is refused at once", async (t) => {
+  const { h, plugin, channel, json } = setup(t);
+  h.agents.set(session, { id: session, status: "running", phase: { kind: "running", turn: 2 } });
+  const id = "aaaaaaaa-bbbb-4ccc-8ddd-000000000005";
+  leaveSteer(channel, id, "Stop.");
+  plugin.tick();
+  const done = await until(() => json("prompts", session, `${id}.json`).refused && json("prompts", session, `${id}.json`));
+  assert.match(done.refused, /takes no messages/);
+});
+
+test("a steer whose turn ended while Harness took it names no turn", async (t) => {
+  const { h, plugin, channel, json } = setup(t);
+  const agent = { id: session, status: "running", phase: { kind: "running", turn: 4 } };
+  h.agents.set(session, agent);
+  h.ctx.controller = {
+    prompt: async () => {
+      agent.status = "running";
+      agent.phase = { kind: "running", turn: 5 };
+      return { accepted: true };
+    },
+  };
+  const id = "aaaaaaaa-bbbb-4ccc-8ddd-000000000004";
+  leaveSteer(channel, id, "Stop.");
+  plugin.tick();
+  const done = await until(() => json("prompts", session, `${id}.json`).startedAt && json("prompts", session, `${id}.json`));
+  assert.equal(done.steeredInto, undefined, "it may have started a turn of its own");
+});
+
+test("a named model switches the session first and keeps Harness's default; the host lists the models", async (t) => {
+  const { h, plugin, channel, json } = setup(t);
+  h.agents.set(session, { id: session });
+  const calls = [];
+  let current = { provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "high" };
+  h.ctx.defaults = {
+    currentSelection: () => current,
+    saveSelection: async (selection) => {
+      calls.push(["default", selection.model]);
+      current = selection;
+    },
+  };
+  h.ctx.controller = {
+    modelCatalog: async () => ({
+      default: current,
+      groups: [{ id: "deepseek-official", name: "DeepSeek", models: [{ id: "deepseek-flash", name: "Flash", reasoning: {} }, { id: "deepseek-pro", name: "Pro" }] }],
+    }),
+    // Harness saves a session's choice as the default for new sessions too.
+    selectModel: async (request) => {
+      calls.push(["select", request.sessionId, request.model]);
+      current = { provider: request.provider, model: request.model };
+      return { selected: current };
+    },
+    create: async () => ({ sessionId: "session-00000009-2222-4333-8444-555555555555" }),
+    prompt: async (input) => {
+      calls.push(["prompt", input.sessionId]);
+      return { accepted: true };
+    },
+  };
+  const pro = { provider: "deepseek-official", model: "deepseek-pro" };
+  const dir = path.join(channel, "prompts", session);
+  fs.mkdirSync(dir, { recursive: true });
+  const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ id, text: "in pro", at: 1, expiresAt: Date.now() + 60_000, model: pro }));
+  plugin.tick();
+  await until(() => json("prompts", session, `${id}.json`).startedAt);
+  assert.deepEqual(calls.splice(0), [["select", session, "deepseek-pro"], ["default", "deepseek-flash"], ["prompt", session]]);
+  assert.deepEqual(current, { provider: "deepseek-official", model: "deepseek-flash", reasoningEffort: "high" });
+
+  const starts = path.join(channel, "starts", "4242");
+  fs.mkdirSync(starts, { recursive: true });
+  fs.writeFileSync(path.join(starts, `${id}.json`), JSON.stringify({ id, cwd: "/work", text: "hi", at: 1, expiresAt: Date.now() + 60_000, model: pro }));
+  plugin.tick();
+  await until(() => json("starts", "4242", `${id}.json`).startedAt);
+  const made = "session-00000009-2222-4333-8444-555555555555";
+  assert.deepEqual(calls.splice(0), [["select", made, "deepseek-pro"], ["default", "deepseek-flash"], ["prompt", made]]);
+
+  const listed = await until(() => {
+    plugin.tick();
+    return json("hosts", "4242.json").models;
+  });
+  assert.equal(json("hosts", "4242.json").channelVersion, 3);
+  assert.deepEqual(listed, {
+    default: { provider: "deepseek-official", model: "deepseek-flash" },
+    groups: [{ id: "deepseek-official", name: "DeepSeek", models: [{ id: "deepseek-flash", name: "Flash" }, { id: "deepseek-pro", name: "Pro" }] }],
+  });
+});
+
+test("the host checks in, and says it is gone when it stops", (t) => {
+  const { plugin, json, files } = setup(t);
+  const checkIn = json("hosts", "4242.json");
+  assert.equal(typeof checkIn.at, "number");
+  assert.equal(checkIn.desktop, false);
+  plugin.stop();
+  assert.deepEqual(files("hosts"), []);
+});
+
+test("a start makes a session in the folder's workspace and queues its first message", async (t) => {
+  const { h, plugin, channel, json } = setup(t);
+  const made = [];
+  const sent = [];
+  h.ctx.workspaces = { list: () => [{ id: "ws-1", path: "/work/known" }] };
+  h.ctx.controller = {
+    create: async (request) => {
+      made.push(request);
+      return { sessionId: `session-0000000${made.length}-2222-4333-8444-555555555555` };
+    },
+    prompt: async (input, signal) => {
+      assert.ok(signal instanceof AbortSignal);
+      sent.push(input);
+      return { accepted: true };
+    },
+  };
+  const dir = path.join(channel, "starts", "4242");
+  fs.mkdirSync(dir, { recursive: true });
+  const known = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const other = "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const ask = (id, cwd) =>
+    fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ id, cwd, text: `hello ${id}`, at: 1, expiresAt: Date.now() + 60_000 }));
+  ask(known, "/work/known");
+  plugin.tick();
+  await until(() => json("starts", "4242", `${known}.json`).startedAt);
+  ask(other, "/work/other");
+  plugin.tick();
+  await until(() => json("starts", "4242", `${other}.json`).startedAt);
+  assert.deepEqual(made, [{ workspaceId: "ws-1" }, { cwd: "/work/other" }]);
+  const first = json("starts", "4242", `${known}.json`);
+  assert.equal(first.sessionId, "session-00000001-2222-4333-8444-555555555555");
+  assert.deepEqual(
+    sent.map(({ requestId, sessionId, mode, content }) => [requestId, sessionId, mode, content[0].text]),
+    [
+      [known, first.sessionId, "queue", `hello ${known}`],
+      [other, "session-00000002-2222-4333-8444-555555555555", "queue", `hello ${other}`],
+    ],
+  );
+  plugin.tick();
+  assert.equal(made.length, 2, "a taken start never makes a second session");
+});
+
+test("a start waits for the controller, and refusals and expiry are written", async (t) => {
+  const { h, plugin, channel, json } = setup(t);
+  const dir = path.join(channel, "starts", "4242");
+  fs.mkdirSync(dir, { recursive: true });
+  const ask = (id, more = {}) =>
+    fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ id, cwd: "/work", text: "hi", at: 1, expiresAt: Date.now() + 60_000, ...more }));
+  ask("waits");
+  ask("relative", { cwd: "work" });
+  plugin.tick();
+  assert.equal(json("starts", "4242", "waits.json").takenAt, undefined);
+  ask("expired", { expiresAt: 1 });
+  let refuse = "create";
+  h.ctx.controller = {
+    create: async () => {
+      if (refuse === "create") throw new Error("no such folder");
+      return { sessionId: session };
+    },
+    prompt: async () => ({ accepted: false, reason: "busy" }),
+  };
+  plugin.tick();
+  await until(() => json("starts", "4242", "waits.json").refused);
+  assert.equal(json("starts", "4242", "waits.json").refused, "no such folder");
+  assert.equal(json("starts", "4242", "waits.json").sessionId, undefined);
+  assert.equal(typeof json("starts", "4242", "expired.json").expiredAt, "number");
+  assert.equal(json("starts", "4242", "relative.json").takenAt, undefined);
+  refuse = "prompt";
+  ask("made");
+  plugin.tick();
+  await until(() => json("starts", "4242", "made.json").refused);
+  assert.deepEqual(
+    [json("starts", "4242", "made.json").sessionId, json("starts", "4242", "made.json").refused],
+    [session, "busy"],
+  );
 });
 
 test("words wait for the controller, and refusals, cancels and expiry are written", async (t) => {

@@ -51,12 +51,19 @@ pub struct Catalog {
 }
 
 static CATALOGS: &[&Catalog] = &[
+    &crate::antigravity::plans::CATALOG,
     &crate::claude::plans::CATALOG,
     &crate::codex::plans::CATALOG,
     &crate::cursor::plans::CATALOG,
     &crate::copilot::plans::CATALOG,
     &crate::grok::plans::CATALOG,
 ];
+
+/// Every provider's catalog, in a fixed order, for what the Mac shares with
+/// phones (each phone keeps a copy and refreshes it from a connected Mac).
+pub fn catalogs() -> impl Iterator<Item = &'static Catalog> {
+    CATALOGS.iter().copied()
+}
 
 /// The plan catalog of the provider with this id, if it has one.
 pub fn catalog(provider: &str) -> Option<&'static Catalog> {
