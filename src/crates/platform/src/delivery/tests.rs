@@ -875,9 +875,16 @@ mod native {
                 let discover = frame_read(&mut socket);
                 desktop_response(&mut socket, &discover, json!({}));
                 assert_eq!(frame_read(&mut socket)["params"]["following"], true);
+                let state = if version == 13 {
+                    json!({"id":THREAD,"hostId":"local","turns":[],"turnHistory":{"kind":"canonical",
+                        "history":{"islands":[{"entries":[{"value":"k"}],"newerBoundary":{"status":"exhausted"}}],
+                            "entitiesByKey":{"k":{"turnId":"turn-fixture","status":if active{"inProgress"}else{"completed"},"items":[]}}}}})
+                } else {
+                    json!({"turns":if active{json!([{"turnId":"turn-fixture","status":"inProgress"}])}else{json!([{"turnId":null,"id":"turn-done","status":"completed"}])}})
+                };
                 frame_send(
                     &mut socket,
-                    json!({"type":"broadcast","method":"thread-stream-state-changed","sourceClientId":"owner","version":version,"params":{"hostId":"local","conversationId":THREAD,"change":{"type":"snapshot","conversationState":{"turns":if active{json!([{"turnId":"turn-fixture","status":"inProgress"}])}else{json!([{"turnId":null,"id":"turn-done","status":"completed"}])}}}}}),
+                    json!({"type":"broadcast","method":"thread-stream-state-changed","sourceClientId":"owner","version":version,"params":{"hostId":"local","conversationId":THREAD,"change":{"type":"snapshot","revision":1,"conversationState":state}}}),
                 );
                 assert_eq!(frame_read(&mut socket)["params"]["following"], false);
                 if active {
