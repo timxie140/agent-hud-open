@@ -41,7 +41,8 @@ pub(super) fn enqueue(
 fn can_wake(data: &Path, thread: &str, timeout: Duration) -> bool {
     match super::super::desktop::owned_snapshot(data, thread, timeout) {
         Ok(Some(state)) => {
-            !super::super::desktop::turn_waits_on_user(&state)
+            state["threadRuntimeStatus"]["type"] != "active"
+                && !super::super::desktop::turn_waits_on_user(&state)
                 && match super::super::current_desktop_turn(&state) {
                     Ok(None) => true,
                     Ok(Some((_, status))) => {
@@ -112,6 +113,9 @@ fn enqueue_with(
     if !matches_input(submission, message_id, text) {
         return Ok("Queued; native wake withheld because the accepted queue input is unverified");
     }
+    if !can_wake() {
+        return Ok("Queued; native wake withheld because the thread was not verified idle");
+    }
     let verified = rpc
         .read("thread/queue/list", list)
         .ok()
@@ -126,9 +130,6 @@ fn enqueue_with(
         return Ok(
             "Queued; native wake withheld because the queue changed or could not be verified",
         );
-    }
-    if !can_wake() {
-        return Ok("Queued; native wake withheld because the thread was not verified idle");
     }
     // A different client can still change the queue after this read: Codex has
     // no atomic wake-if-head-is API. Never claim that opening the URI ran it.

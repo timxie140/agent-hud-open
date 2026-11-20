@@ -57,14 +57,20 @@ fn recorded(
                 continue;
             }
             let id = item["id"].as_str().filter(|id| !id.is_empty())?;
+            // The queue can assign a native item UUID. Its clientId still
+            // binds the persisted input to the HUD submission, including
+            // when the user manually takes it out of the queue.
+            let identities = [item.get("clientId"), item.get("clientUserMessageId")];
             if found.is_some()
                 || (id.starts_with("agent-hud:") && id != expected)
-                || ["clientUserMessageId", "clientId"].iter().any(|field| {
-                    item[*field].as_str().is_some_and(|id| {
-                        (*field == "clientUserMessageId" || id.starts_with("agent-hud:"))
-                            && id != expected
-                    })
-                })
+                || !identities
+                    .iter()
+                    .flatten()
+                    .any(|value| value.as_str() == Some(expected.as_str()))
+                || identities
+                    .iter()
+                    .flatten()
+                    .any(|value| !value.is_null() && value.as_str() != Some(expected.as_str()))
             {
                 return None;
             }
@@ -86,7 +92,7 @@ mod tests {
     fn only_a_unique_native_input_may_confirm() {
         let text = "[Agent HUD · Dot; message_id=m-dot-11111111]\nfixture";
         let fingerprint = format!("{:x}", Sha256::digest(text));
-        let input = json!({"type":"userMessage","id":"native-input","content":[{"type":"text","text":text}]});
+        let input = json!({"type":"userMessage","id":"native-input","clientId":"agent-hud:m-dot-11111111","content":[{"type":"text","text":text}]});
         let response = |items: Vec<Value>| json!({"data":[{"id":"original-turn","status":"completed","items":items}]});
         let check = |items| {
             recorded(
@@ -98,6 +104,9 @@ mod tests {
         };
         assert_eq!(check(vec![input.clone()]).unwrap().turn(), "original-turn");
         assert!(check(vec![input.clone(), input.clone()]).is_none());
+        let mut unrelated = input.clone();
+        unrelated.as_object_mut().unwrap().remove("clientId");
+        assert!(check(vec![unrelated]).is_none());
         let mut conflict = input.clone();
         conflict["clientUserMessageId"] = json!("agent-hud:wrong");
         assert!(check(vec![conflict]).is_none());

@@ -105,10 +105,7 @@ fn a_new_queue_item_waits_if_its_thread_is_not_verified_idle() {
     );
     let reason = enqueue_with(&mut rpc, &opener, THREAD, TEXT, MESSAGE, || false).unwrap();
     assert!(reason.contains("not verified idle"));
-    assert_eq!(
-        methods(&calls),
-        ["thread/queue/list", "thread/queue/add", "thread/queue/list"]
-    );
+    assert_eq!(methods(&calls), ["thread/queue/list", "thread/queue/add"]);
 }
 
 #[test]
