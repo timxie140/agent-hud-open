@@ -585,6 +585,8 @@ class Adapter:
             elif role == 'dot' and name == 'hud_ack_message':
                 result = self.ack(args.get('id'))
             elif role == 'dot' and name == 'hud_reply':
+                if 'delivery' in args:
+                    raise Rejected('Replies use queue; delivery/steer is not allowed on hud_reply')
                 result = self.reply(args.get('id'), args.get('text'))
             elif role == 'local' and name == 'hud_dot_status':
                 try:

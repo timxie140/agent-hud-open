@@ -178,9 +178,7 @@ hud_send_message({
 包括重启、拒绝和不确定结果之后；不得换 request_id 来自动重发。机器实例 ID 不匹配时拒绝，
 所以 Windows 与 Mac 即便有相同聊天 UUID，也不能跨入口投递。
 
-主动消息及 `hud_reply` 均使用自动策略：可验证的 Codex Desktop owner 正在运行时执行原生 steer；
-空闲或确认没有 Desktop owner 时进入原生队列。不确定或拒绝的 steer 不会改走队列重发。
-队列不会创建替代聊天。其他原生客户端不在此功能范围内。
+主动 `hud_send_message` 默认排队。用户明确要求、且 fresh inventory 的 `steerable=true` 时，才传 `delivery: "steer"`；实际发送仍重新核验。`hud_reply` 不接受 delivery 参数，回复仅排队。失败或不确定时不换模式重试；同 request_id 改模式会拒绝。
 
 `hud_send_message` 返回 `id` / `deliveryId` 和 `transportState`。
 可用同入口 `hud_get_delivery_status({"id":"返回的 id"})` 只读跟踪；

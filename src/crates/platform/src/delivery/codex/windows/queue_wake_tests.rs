@@ -34,6 +34,9 @@ struct FakeOpener {
     fail: bool,
 }
 impl process::ProcessRunner for FakeOpener {
+    fn launch(&self, _: &process::CommandPlan, _: &str) -> Result<process::Launched> {
+        panic!("no process may be launched in queue wake tests")
+    }
     fn run(&self, _: &process::CommandPlan) -> Result<process::ProcessOutput> {
         panic!("no process may be spawned in queue wake tests")
     }
@@ -341,6 +344,7 @@ fn journal_retries_and_restart_never_repeat_queue_write_or_wake() {
             form: PromptForm::Own,
             operation: Operation::SteerOrEnqueue,
             expected_turn_id: None,
+            model: None,
         };
         let mut submission = item();
         submission["clientUserMessageId"] = json!("agent-hud:wake-fixture");

@@ -32,6 +32,14 @@ class SessionTests(unittest.TestCase):
                 'request_id': 'isolated-request-0001', 'host': self.host}
         return sessions.send(self.adapter, **dict(args, **patch))
 
+    def test_reply_rejects_delivery_before_any_mutation(self):
+        sent = self.send()
+        before = self.adapter.receipt(sent['id'])
+        with self.assertRaisesRegex(hud.Rejected, 'Replies use queue'):
+            self.adapter.rpc('dot', {'method': 'tools/call', 'params': {'name': 'hud_reply',
+                'arguments': {'message_id': sent['id'], 'text': 'reply', 'delivery': 'steer'}}})
+        self.assertEqual(self.adapter.receipt(sent['id']), before)
+
     def test_explicit_steer_is_persisted_and_cannot_change_on_retry(self):
         result = self.send(delivery='steer')
         self.assertEqual(receipts.pending(self.adapter)[0]['delivery'], 'steer')

@@ -1137,7 +1137,6 @@ for line in sys.stdin:
         let route = QueueRoute {
             discover_executable: false,
             executable: script,
-            discover_executable: false,
             environment: [
                 ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
                 ("QUEUE_LOG".to_owned(), log.to_string_lossy().into_owned()),
@@ -1372,7 +1371,8 @@ echo '{"id":2,"result":{"queuedSubmission":{"id":"q1"}}}'
                 receipt.state,
                 match operation {
                     Operation::Start => DeliveryState::Started,
-                    Operation::Automatic | Operation::Steer => DeliveryState::Steered,
+                    Operation::Automatic | Operation::Steer | Operation::SteerOrEnqueue =>
+                        DeliveryState::Steered,
                     Operation::Interrupt => DeliveryState::Interrupted,
                     Operation::Enqueue => DeliveryState::Queued,
                 }

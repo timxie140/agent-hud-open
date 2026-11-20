@@ -198,6 +198,7 @@ fn deliver(
         form: PromptForm::Labelled,
         operation: op,
         expected_turn_id: expected.map(str::to_owned),
+        model: None,
     };
     let timeout = if matches!(action, Some(Action::Timeout)) {
         Duration::from_millis(200)
